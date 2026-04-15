@@ -31,12 +31,17 @@ Scenarios 1-3 are supported; 4 is on the way.
 
 ## Quick start
 
+**Linux/macOS:**
 ```bash
-wget https://raw.atomgit.com/openeuler/epkg/raw/master/bin/epkg-installer.sh
-bash epkg-installer.sh
+curl -fsSL https://raw.atomgit.com/openeuler/epkg/raw/master/bin/epkg-installer.sh | bash
+```
 
-# Then start a new shell so PATH is updated
-bash
+**Windows (PowerShell):**
+```powershell
+irm https://raw.atomgit.com/openeuler/epkg/raw/master/bin/epkg-installer.ps1 | iex
+```
+
+Then start a new shell so PATH is updated.
 
 # Create an environment and install/run packages
 epkg env create myenv -c alpine
