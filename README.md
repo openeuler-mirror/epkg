@@ -33,12 +33,12 @@ Scenarios 1-3 are supported; 4 is on the way.
 
 **Linux/macOS:**
 ```bash
-curl -fsSL https://raw.atomgit.com/openeuler/epkg/raw/master/bin/epkg-installer.sh | bash
+curl -fsSL https://raw.atomgit.com/openeuler/epkg/raw/master/bin/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.atomgit.com/openeuler/epkg/raw/master/bin/epkg-installer.ps1 | iex
+irm https://raw.atomgit.com/openeuler/epkg/raw/master/bin/install.ps1 | iex
 ```
 
 Then start a new shell so PATH is updated.
