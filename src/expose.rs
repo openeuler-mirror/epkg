@@ -697,6 +697,7 @@ fn create_ebin_wrapper(env_root: &Path, fs_file_absolute: &Path, fs_file_relativ
                 .with_context(|| format!("Failed to handle elf for {}", ebin_path.display()))?;
             return Ok(Some(ebin_path));
         }
+        #[cfg(unix)]
         FileType::MachO => {
             // macOS native binary - for brew environment at HOMEBREW_PREFIX, create symlink
             // (same logic as handle_elf for ELF binaries). For other cases, create exec wrapper.
@@ -730,6 +731,11 @@ fn create_ebin_wrapper(env_root: &Path, fs_file_absolute: &Path, fs_file_relativ
             create_binary_wrapper(&resolved_env_path, &ebin_path)
                 .with_context(|| format!("Failed to create MachO wrapper for {}", resolved_env_path.display()))?;
             return Ok(Some(ebin_path));
+        }
+        #[cfg(not(unix))]
+        FileType::MachO => {
+            // MachO is macOS-specific; skip on non-Unix platforms
+            return Ok(None);
         }
         FileType::ShellScript
         | FileType::PerlScript
@@ -831,6 +837,7 @@ fn create_script_wrapper(
 
 /// Create a simple exec wrapper for native binaries (Mach-O on macOS).
 /// This creates a shell script that directly execs the binary.
+#[cfg(unix)]
 fn create_binary_wrapper(fs_file: &Path, ebin_path: &Path) -> Result<()> {
     // Create script wrapper atomically: write to temp file first, then rename.
     let ebin_dir = ebin_path.parent()
