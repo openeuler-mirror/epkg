@@ -293,7 +293,7 @@ deploy_release_binary() {
 }
 
 # Deploy binary to Windows self environment
-# If file is locked (epkg.exe running), show info and wait for user action
+# If file is locked (epkg.exe running), automatically kill the process and retry
 # Returns 0 on success, 1 on failure (but doesn't exit)
 deploy_to_windows_self() {
     local src="$1"
@@ -316,23 +316,33 @@ deploy_to_windows_self() {
         return 0
     fi
 
-    # Copy failed - show running epkg processes and ask user to handle it
+    # Copy failed - check if file is locked by Windows process
     echo ""
     echo "=========================================="
     echo "WARNING: Cannot update $win_install_name"
-    echo "File is locked by running Windows process(es):"
-    # Show process details with full command line (remove blank/whitespace lines from PowerShell output)
-    /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command "Get-CimInstance Win32_Process -Filter \"Name='epkg.exe'\" | Select-Object ProcessId,ProcessName,CommandLine | Format-List" 2>/dev/null | sed 's/\r$//' | grep -v '^[[:space:]]*$' || /mnt/c/Windows/System32/tasklist.exe /FI "IMAGENAME eq epkg.exe" /FO TABLE 2>/dev/null || echo "  (cannot get process details)"
+    echo "File is locked by running Windows process(es)."
     echo "Location: $dst"
     echo ""
-    echo "To kill: Stop-Process -Id <PID>   # or   taskkill /F /IM epkg.exe"
-    echo ""
-    echo "Please close the above epkg.exe process(es), then press Enter to retry"
-    echo "Or press Ctrl+C to cancel"
-    echo "=========================================="
-    read -r
 
-    # Retry after user action
+    # Show running epkg processes
+    echo "Detected running epkg.exe process(es):"
+    /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command "Get-CimInstance Win32_Process -Filter \"Name='epkg.exe'\" | Select-Object ProcessId,ProcessName,CommandLine | Format-List" 2>/dev/null | sed 's/\r$//' | grep -v '^[[:space:]]*$' || /mnt/c/Windows/System32/tasklist.exe /FI "IMAGENAME eq epkg.exe" /FO TABLE 2>/dev/null || echo "  (cannot get process details)"
+
+    # Auto-kill the process
+    echo ""
+    echo "Auto-killing epkg.exe process(es)..."
+    /mnt/c/Windows/System32/taskkill.exe /F /IM epkg.exe 2>/dev/null || \
+        /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command "Get-Process epkg -ErrorAction SilentlyContinue | Stop-Process -Force" 2>/dev/null || true
+
+    sleep 1
+
+    # Remove the locked file (more reliable than waiting for process cleanup)
+    echo "Removing locked file..."
+    rm -f "$dst" 2>/dev/null || true
+
+    echo "=========================================="
+
+    # Retry after killing process and removing file
     if cp "$src" "$dst" 2>/dev/null; then
         printf "[DEPLOY-XDEV-copy] %s\n" "$dst"
         return 0
