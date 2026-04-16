@@ -809,7 +809,10 @@ pub fn env_config() -> &'static EnvConfig {
         }
         #[cfg(not(test))]
         {
-            crate::io::deserialize_env_config().expect("Failed to deserialize env config")
+            crate::io::deserialize_env_config().unwrap_or_else(|e| {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            })
         }
     })
 }

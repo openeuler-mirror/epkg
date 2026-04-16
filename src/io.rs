@@ -101,12 +101,30 @@ pub fn deserialize_env_config_for(env_name: String) -> Result<EnvConfig> {
         }
     }
 
-    // Check if environment exists
-    if !lfs::exists_on_host(&config_path) {
-        return Err(eyre::eyre!("Environment config file not found: '{}'", config_path.display()));
-    }
-
-    let mut env_config: EnvConfig = read_yaml_file(&config_path)?;
+    let mut env_config: EnvConfig = match fs::read_to_string(&config_path) {
+        Ok(contents) => {
+            serde_yaml::from_str(&contents).map_err(|e| {
+                eyre::eyre!(
+                    "{}: {}\n  Failed to parse YAML",
+                    config_path.display(),
+                    e
+                )
+            })?
+        }
+        Err(e) => {
+            let hint = if e.kind() == std::io::ErrorKind::NotFound {
+                "\n  Environment '{}' may not exist"
+            } else {
+                ""
+            };
+            return Err(eyre::eyre!(
+                "{}: {}{}",
+                config_path.display(),
+                e,
+                hint.replace("{}", &env_name)
+            ));
+        }
+    };
 
     // Override env_root with EPKG_ENV_ROOT if set (for VM guest execution)
     // In VM guest, ~/.epkg is mounted at /opt/epkg, so paths need to be converted
