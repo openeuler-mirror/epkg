@@ -1143,6 +1143,21 @@ pub fn is_executable(path: &Path) -> Result<bool> {
 /// Check if a file is executable, handling symlinks that may point to targets within environment root.
 /// Returns the resolved path if executable, or None if not.
 #[cfg(unix)]
+/// Check if a symlink targets a known multicall binary (coreutils, busybox, toybox).
+/// Multicall binaries use argv[0] to determine which subcommand to run,
+/// so symlinks to them should preserve the original path, not resolve to the target.
+fn is_symlink_to_multicall_binary(path: &Path) -> bool {
+    if !lfs::is_symlink(path) {
+        return false;
+    }
+    let link_target = std::fs::read_link(path).unwrap_or_default();
+    let target_name = link_target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    ["epkg", "coreutils", "busybox", "toybox"].contains(&target_name)
+}
+
 fn is_executable_within_env(path: &Path, env_root: &Path) -> Result<Option<PathBuf>> {
     trace!("is_executable_within_env checking: {}", path.display());
 
@@ -1150,7 +1165,13 @@ fn is_executable_within_env(path: &Path, env_root: &Path) -> Result<Option<PathB
         Some(resolved) => {
             trace!("Resolved {} -> {}", path.display(), resolved.display());
             if is_executable(&resolved)? {
-                Ok(Some(resolved))
+                // For symlinks to multicall binaries, return the original symlink path
+                // to preserve argv[0] (e.g., /usr/bin/echo -> coreutils should return echo)
+                if is_symlink_to_multicall_binary(path) {
+                    Ok(Some(path.to_path_buf()))
+                } else {
+                    Ok(Some(resolved))
+                }
             } else {
                 Ok(None)
             }
