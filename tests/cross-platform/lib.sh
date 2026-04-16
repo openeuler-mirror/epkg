@@ -96,22 +96,28 @@ test_build_ninja() {
 
 # Test: scientific computing
 test_scipy_numpy() {
-    run_install numpy || return 1
+    # numpy requires python
     local py_cmd="$(_get_python_cmd)"
+    run_install python || run_install python3 || return 1
+    run_install numpy || return 1
     run $py_cmd -c "import numpy; print('numpy version:', numpy.__version__)" || return 1
     return 0
 }
 
 test_scipy_scipy() {
-    run_install scipy || return 1
+    # scipy requires python and numpy
     local py_cmd="$(_get_python_cmd)"
+    run_install python || run_install python3 || return 1
+    run_install scipy || return 1
     run $py_cmd -c "import scipy; print('scipy version:', scipy.__version__)" || return 1
     return 0
 }
 
 test_scipy_pandas() {
-    run_install pandas || return 1
+    # pandas requires python
     local py_cmd="$(_get_python_cmd)"
+    run_install python || run_install python3 || return 1
+    run_install pandas || return 1
     run $py_cmd -c "import pandas; print('pandas version:', pandas.__version__)" || return 1
     return 0
 }

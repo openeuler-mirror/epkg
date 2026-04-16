@@ -1307,11 +1307,17 @@ fn add_load_command_changes(
     }
 }
 
-/// Resolve a Homebrew placeholder dylib path to an absolute path under env_root.
+/// Resolve a Homebrew placeholder dylib path to an absolute path.
 ///
-/// For Cellar layout:
+/// For macOS bottles, vanilla brew replaces placeholders with HOMEBREW_PREFIX-based paths:
 /// - @@HOMEBREW_CELLAR@@/jq/1.8.1/lib/libjq.1.dylib -> env_root/Cellar/jq/1.8.1/lib/libjq.1.dylib
-/// - @@HOMEBREW_PREFIX@@/opt/oniguruma/lib/libonig.5.dylib -> env_root/Cellar/oniguruma/version/lib/libonig.5.dylib
+/// - @@HOMEBREW_PREFIX@@/opt/gcc/lib/libfoo.dylib -> env_root/opt/gcc/lib/libfoo.dylib
+///
+/// Note: For @@HOMEBREW_PREFIX@@, we preserve the opt/ path format (like vanilla brew)
+/// rather than resolving to Cellar path, because:
+/// 1. The resulting path is shorter (no overflow with install_name_tool)
+/// 2. opt/ symlinks to Cellar anyway
+/// 3. This matches vanilla brew's behavior
 #[cfg(target_os = "macos")]
 fn resolve_homebrew_dylib_path_for_env(placeholder_path: &str, prefix: &str, env_root: &Path) -> Option<String> {
     // Extract the path after the placeholder prefix
@@ -1320,8 +1326,13 @@ fn resolve_homebrew_dylib_path_for_env(placeholder_path: &str, prefix: &str, env
     match prefix {
         "@@HOMEBREW_PREFIX@@" => {
             // Format: /opt/pkgname/lib/libfoo.dylib or /lib/libfoo.dylib
-            // For Cellar layout, libraries are in Cellar/pkgname/version/lib/
-            // Try to find in Cellar first, then fall back to env_root
+            // Direct substitution: env_root + rest (like vanilla brew)
+            // This produces shorter paths than Cellar resolution, avoiding overflow
+            let resolved = env_root.join(rest);
+            if resolved.exists() {
+                return Some(resolved.display().to_string());
+            }
+            // Fall back to Cellar resolution if direct path doesn't exist
             extract_lib_path_and_resolve_cellar(rest, env_root)
         }
         "@@HOMEBREW_CELLAR@@" => {
