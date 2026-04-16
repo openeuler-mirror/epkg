@@ -4,7 +4,7 @@
 # Usage: ./run-wsl2-windows.sh [-o OS] [-t LANG] [-e EPKG_EXE_PATH]
 #   -o OS       Run only this OS (e.g. alpine, ubuntu)
 #   -t LANG     Run only this lang test (e.g. python, go)
-#   -e PATH     Path to Windows epkg.exe (default: /mnt/c/Users/$USER/epkg.exe)
+#   -e PATH     Path to Windows epkg.exe (auto-detected and auto-copied from target/)
 #
 # This script runs from WSL2 but tests a native Windows epkg.exe binary.
 # The epkg.exe manages Windows environments (libkrun VM or native Windows packages).
@@ -24,8 +24,62 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# Get Windows user profile path from WSL2
+get_windows_user_profile_wsl() {
+    # If already provided (MSYS2/Cygwin), it may already be a Windows path.
+    local win_profile="${USERPROFILE:-}"
+    if [[ -n "$win_profile" && "$win_profile" == *"\\Users\\"* && -x /usr/bin/wslpath ]]; then
+        wslpath -u "$win_profile" 2>/dev/null || true
+        return 0
+    fi
+
+    # WSL2 + Windows interop: query via cmd.exe and extract "X:\Users\NAME"
+    local cmd="/mnt/c/Windows/System32/cmd.exe"
+    if [[ ! -x "$cmd" ]]; then
+        return 1
+    fi
+
+    local out win
+    out=$("$cmd" /c echo %USERPROFILE% 2>/dev/null || true)
+    win=$(printf "%s" "$out" | awk 'match($0,/[A-Za-z]:\\Users\\[^[:space:]]+/){print substr($0,RSTART,RLENGTH); exit}')
+
+    if [[ -n "$win" ]]; then
+        local win_profile_wsl
+        win_profile_wsl=$(wslpath -u "$win" 2>/dev/null) || win_profile_wsl=""
+        if [[ -n "$win_profile_wsl" ]]; then
+            echo "$win_profile_wsl"
+            return 0
+        fi
+    fi
+
+    # Fallback: derive Windows username via whoami.exe and map to /mnt/<drive>/Users/<name>.
+    # Example whoami output: "P16S\epkg" -> "/mnt/c/Users/epkg"
+    local whoami_cmd="/mnt/c/Windows/System32/whoami.exe"
+    if [[ -x "$whoami_cmd" ]]; then
+        local whoami_out win_user
+        whoami_out=$("$whoami_cmd" 2>/dev/null || true)
+        win_user=$(printf "%s" "$whoami_out" | awk -F'\\' 'NF>=2 {u=$NF; gsub(/\r/, "", u); print u; exit}')
+        if [[ -n "$win_user" ]]; then
+            local user_profile_guess="/mnt/c/Users/${win_user}"
+            if [[ -d "$user_profile_guess" ]]; then
+                echo "$user_profile_guess"
+                return 0
+            fi
+        fi
+    fi
+
+    return 1
+}
+
+# Auto-detect Windows user profile path
+WIN_PROFILE_WSL=""
+if ! WIN_PROFILE_WSL=$(get_windows_user_profile_wsl 2>/dev/null); then
+    # Fallback to default WSL path pattern
+    WIN_PROFILE_WSL="/mnt/c/Users/${USER}"
+fi
+
 # Default path to Windows epkg.exe
-DEFAULT_EPKG_EXE="/mnt/c/Users/${USER}/epkg.exe"
+DEFAULT_EPKG_EXE="${WIN_PROFILE_WSL}/epkg.exe"
 EPKG_EXE=""
 SELECT_OS=""
 SELECT_TEST=""
@@ -84,11 +138,26 @@ if [ -z "$EPKG_EXE" ]; then
     EPKG_EXE="$DEFAULT_EPKG_EXE"
 fi
 
+# Auto-copy epkg.exe from build target if not found at destination
+if [ ! -f "$EPKG_EXE" ]; then
+    SOURCE_EXE="${PROJECT_ROOT}/target/x86_64-pc-windows-gnu/debug/epkg.exe"
+    if [ -f "$SOURCE_EXE" ]; then
+        echo "[WSL2-Windows] epkg.exe not found at destination, copying from build target..."
+        echo "[WSL2-Windows]   Source: ${SOURCE_EXE}"
+        echo "[WSL2-Windows]   Destination: ${EPKG_EXE}"
+        cp "$SOURCE_EXE" "$EPKG_EXE"
+        echo "[WSL2-Windows] Copy complete."
+    fi
+fi
+
 # Verify epkg.exe exists
 if [ ! -f "$EPKG_EXE" ]; then
     echo "Error: epkg.exe not found at: $EPKG_EXE" >&2
     echo "" >&2
-    echo "Please build epkg for Windows first, or specify the path with -e:" >&2
+    echo "Please build epkg for Windows first:" >&2
+    echo "  make epkg-x86_64-pc-windows-gnu" >&2
+    echo "" >&2
+    echo "Or specify the path with -e:" >&2
     echo "  $0 -e /path/to/epkg.exe -o alpine" >&2
     exit 1
 fi
