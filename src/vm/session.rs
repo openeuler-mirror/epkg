@@ -170,6 +170,8 @@ pub fn cleanup_vm_session_files(session_file: &Path, socket_path: &Path) {
 
 /// Register a new VM session to the on-disk session file.
 /// Must be called after VM starts successfully.
+/// Used by both libkrun and qemu VMM backends on Linux.
+#[cfg(any(feature = "libkrun", target_os = "linux"))]
 pub fn register_vm_session(
     env_root: &Path,
     env_name: &str,
@@ -214,6 +216,8 @@ pub fn register_vm_session_simple(env_root: &Path, env_name: &str, socket_path: 
 }
 
 /// Unregister a VM session (called when VM shuts down).
+/// Used by both libkrun and qemu VMM backends on Linux.
+#[cfg(any(feature = "libkrun", target_os = "linux"))]
 pub fn unregister_vm_session(env_name: &str) -> Result<()> {
     let session_file = vm_session_file_path(env_name);
     if session_file.exists() {

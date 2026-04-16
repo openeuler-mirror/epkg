@@ -17,6 +17,7 @@
 //! - Files owned by host user on host → appear as owned by --user in guest
 
 /// Maximum UID/GID value for squash mapping
+#[cfg(any(feature = "libkrun", target_os = "linux"))]
 const MAX_ID: u32 = 4294967295;
 
 /// Auto-generate UID/GID mapping specs for VM mode.
@@ -38,6 +39,7 @@ const MAX_ID: u32 = 4294967295;
 /// uid_specs: ["squash-guest:0:501:4294967295", "host:501:0:1"]
 /// gid_specs: ["squash-guest:0:20:4294967295", "host:20:0:1"]
 /// ```
+#[cfg(any(feature = "libkrun", target_os = "linux"))]
 pub fn auto_idmap_specs(
     host_uid: u32,
     host_gid: u32,
@@ -65,6 +67,7 @@ pub fn auto_idmap_specs(
 /// Returns true if:
 /// - Host user is non-root (root doesn't need mapping)
 /// - Running in VM mode (caller's responsibility to check)
+#[cfg(any(feature = "libkrun", target_os = "linux"))]
 pub fn should_auto_map(host_uid: u32) -> bool {
     host_uid != 0
 }
@@ -73,6 +76,7 @@ pub fn should_auto_map(host_uid: u32) -> bool {
 ///
 /// User-specified specs are appended after auto specs.
 /// In virtiofsd, later rules have higher priority.
+#[cfg(any(feature = "libkrun", target_os = "linux"))]
 pub fn merge_idmap_specs(
     auto_specs: Vec<String>,
     user_specs: Vec<String>,
@@ -85,6 +89,7 @@ pub fn merge_idmap_specs(
 /// - None or "root" → (0, 0)
 /// - Numeric string like "1000" → (1000, 1000)  (GID defaults to UID)
 /// - Username → TODO: lookup from environment's /etc/passwd
+#[cfg(any(feature = "libkrun", target_os = "linux"))]
 fn resolve_guest_user(user: Option<&str>) -> (u32, u32) {
     match user {
         None | Some("root") => (0, 0),
@@ -108,7 +113,7 @@ pub fn specs_to_string(specs: &[String]) -> String {
     specs.join("\n")
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "libkrun", target_os = "linux")))]
 mod tests {
     use super::*;
 

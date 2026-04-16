@@ -93,7 +93,7 @@ pub fn try_vmm_backends(
 }
 
 /// Get default VMM backend order based on platform and features.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
 fn default_vmm_order() -> Vec<String> {
     let mut order = Vec::new();
     #[cfg(feature = "libkrun")]
