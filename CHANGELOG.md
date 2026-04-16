@@ -2,6 +2,203 @@
 
 ---
 
+## [v0.2.5] – 2026-04-21
+
+### Added
+
+#### libkrun MicroVM Backend (Cross-Platform VM Sandbox)
+- **libkrun module** – Cross-platform microVM backend for  Linux (KVM), macOS (HVF), Windows (WHPX). Credit: A3S-Lab's windows enabling.
+- **VM session reuse** – Reuse VM instance across install/upgrade scriptlets for performance; cross-process session discovery and file-based locking.
+- **Reverse vsock mode** – Guest-initiated vsock connection for Windows/WHPX compatibility; hybrid forward+reverse mode for reliability.
+- **TSI network hijack** – Transparent Socket Impersonation for seamless VM network access without user-space proxy.
+- **virtiofs DAX optimization** – 256-512 MiB shared memory window for high-performance filesystem access.
+- **Embedded init.krun** – Embed init binary in epkg for Windows VM environments; production vs debug modes.
+- **VM lifecycle management** – `epkg vm` subcommand: start/stop/status/list for explicit VM control.
+- **Stream/batch protocol** – Unified JSON Lines protocol with flow control; PTY and non-PTY execution modes.
+- **Windows named pipe bridge** – libkrun_bridge for vsock emulation on Windows via named pipes.
+- **Performance profiling** – `[PERF]` timestamps and EPKG_DEBUG_LIBKRUN environment variable for debugging.
+- **Kernel auto-download** – Download architecture-specific vmlinux for aarch64/riscv64 on Windows/macOS.
+
+#### Homebrew Bottle Support
+- **brew module** – Full integration of Homebrew bottles on macOS and Linuxbrew.
+- **dylib path rewriting** – Rewrite Mach-O dylib paths for sandbox environment; handle Cellar layout and Frameworks symlinks.
+- **ELF RPATH rewriting** – Rewrite Linux ELF interpreter and RPATH for Linuxbrew in namespace isolation.
+- **HOMEBREW_PREFIX handling** – Short prefix (.LB) for path rewriting to prevent buffer overflow; placeholder replacement.
+- **post_install execution** – Ruby formula_stub.rb with comprehensive Homebrew API coverage (99% of post_install usage).
+- **Formula metadata parsing** – keg_only, post_install_defined, service, aliases/oldnames as provides, caveats.
+- **launchd/systemd service generation** – Generate service files from BrewService definition.
+- **MachO symlink exposure** – Create symlink for MachO binaries in brew environment (usable as shebang interpreter).
+- **uses_from_macos dependencies** – Handle macOS-provided dependencies for Linux bottles.
+- **libexec symlinks** – Create libexec directory symlinks for gcc and other tools.
+
+#### Windows Cross-Platform Support
+- **NTFS Extended Attributes (EA)** – Store Unix file mode in EA for executable binaries on Windows.
+- **Windows symlink support** – Junction for directories, file symlink fallback via libkrun virtiofs.
+- **Path separator handling** – Normalize mixed path separators; sanitize Windows-illegal filename characters.
+- **Windows named pipe** – libkrun_stream for vsock data transmission with FlushFileBuffers.
+- **PowerShell profile integration** – epkg.ps1 script for PowerShell environment setup.
+- **PowerShell installer** – `bin/install.ps1` with `irm | iex` one-liner installation; native SHA256 verification via Get-FileHash.
+- **CMD tool shims** – python.cmd, ruby.cmd, posix_shell.cmd for Windows tool wrapper.
+- **WSL2 launcher** – Run Windows epkg.exe from WSL2 environment; WSL2 entry script for cross-platform testing.
+- **Case sensitivity support** – NTFS case sensitivity inheritance for unpacked files and links.
+
+#### VM Architecture
+- **vmm.rs** – Unified VMM backend abstraction (libkrun, QEMU); auto-selection based on platform.
+- **vm/ module directory** – client.rs, guest_daemon.rs, keeper.rs, session.rs, start/stop/status/list.rs.
+- **Guest daemon improvements** – spawn via fork()+execvp() for vfork hang fix; poll-based read retry; exit message on spawn failure.
+- **Flow control** – Blocking writes with yield; stdin thread management; proper stream shutdown.
+- **Guest clock sync** – Synchronize guest clock with host time via clock_settime on each command; fixes nested epkg stall.
+- **Host env passthrough** – Pass EPKG_HOME, EPKG_HOST_OS, EPKG_USER, EPKG_CACHE via kernel cmdline; inherit in guest_daemon.
+- **Path-consistency mount** – Mount host ~/.epkg to same guest path; config files work without transformation.
+- **virtiofs DAX optimization** – dax=inode mode for per-file DAX control; rootflags=dax for root filesystem.
+
+#### Store and Disk Management
+- **Progressive disk space estimation** – Estimate required space incrementally during install planning.
+- **Store integrity validation** – Validate store packages against mtree checksums; detect corruption.
+- **consumed.json marker** – Track packages consumed by LinkType::Move for accurate space accounting.
+- **Disk space enforcement** – Prevent ENOSPC errors with pre-check; `--ignore-disk-space` fallback.
+- **Parallel package operations** – Parallelize unpack and link with bounded workers; active chunk download cap at 9.
+
+#### Expose and Link Improvements
+- **MachO binary handling** – Symlink instead of wrapper for MachO at HOMEBREW_PREFIX (fixes shebang chain).
+- **libexec symlinks** – Create libexec/bin symlinks for brew commands; skip if ebin wrapper exists.
+- **Windows cross-compile** – Proper #[cfg(unix)] and #[cfg(windows)] guards for is_brew_environment().
+- **LinkType::Move fallback** – Copy+delete when moving across filesystems.
+- **usr-merge symlink adjustment** – Adjust relative symlinks for usr-merge layout.
+- **Parallel link_packages()** – Bounded worker pool for package linking.
+
+#### Tar Extract and LFS Improvements
+- **Centralized tar extraction** – unpack_tar_archive() handles all formats (rpm, deb, apk, conda, brew, epkg).
+- **NTFS case sensitivity** – Enable case sensitivity inheritance on Windows via libkrun virtiofs.
+- **PUA character handling** – Win32 PUA path mapping shared between lfs and tar_extract.
+- **Directory caching** – Cache created directories to avoid redundant create_dir_all calls.
+- **Windows symlink API** – Explicit symlink_file_for_native/symlink_dir_for_native with virtiofs fallback.
+- **Hard link handling** – Handle hard links in unpack on Windows; proper symlink type detection.
+- **Permission fixup optimization** – Skip for symlinks; avoid extra disk I/O.
+
+#### Busybox/Applets
+- **dnf/apt/apk applets** – Shims for RPM/DEB/APK package managers.
+- **seq applet** – Generate sequence of numbers.
+- **printf applet** – Format and print strings (shell compatibility).
+- **adduser --uid option** – Specify UID when creating user.
+- **update-alternatives --family** – Family option for alternatives management.
+- **get_uid_name/get_gid_name** – Read /etc/passwd directly to avoid nscd query.
+- **df/ls on Windows** – Partial semantics enabled on Windows.
+- **Cross-platform applet symlinks** – Native epkg binary for each platform; symlink_file_for_native for all applets.
+- **RLIMIT_NOFILE increase** – Increase in VM to fix "No file descriptors available".
+
+#### Documentation
+- **brew architecture (zh)** – Comprehensive Homebrew integration documentation (791 lines).
+- **VM session architecture (zh)** – Cross-process session reuse, data integrity, stream protocol (726 lines).
+- **virtiofs rootfs (zh)** – Windows host + virtiofs architecture, LX syscalls, init, inode (304 lines).
+- **Cross-platform plan (zh)** – Windows/macOS support roadmap and implementation notes (741 lines).
+- **PERFORMANCE_ANALYSIS.md** – End-to-end timing analysis for virtiofs operations (311 lines).
+- **libkrun troubleshooting (zh)** – VM debugging tips, WHPX/HVF issues, kernel cmdline (1128 lines).
+- **env-path architecture (zh)** – VM guest path resolution, EPKG env vars, mount strategy (323 lines).
+- **package format linking (zh)** – Linking strategy documentation (57 lines).
+- **ebin exposure (zh)** – Extended documentation (66 lines).
+
+#### Testing
+- **Cross-platform test suite** – tests/cross-platform/ with WSL2 launcher, brew/conda/msys2 channels.
+- **VM sandbox tests** – Extended test-vm-sandbox.sh with batch/stream mode, PTY, session reuse.
+- **Isolation mode tests** – test-isolation-modes.sh for env/fs/vm sandbox modes.
+- **dev-projects enhancements** – WSL2 entry script, timeout increase to 600s for brew, ACPI warning filter.
+- **brew package tests** – Install gcc for packages needing libstdc++, crystal --static skip on archlinux.
+- **virtiofs DAX tests** – File I/O tests for various sizes (small files, page boundaries, large binaries).
+- **VM guest busybox-bin** – Symlink busybox utilities for test scripts; preserve PATH on activate/deactivate.
+- **Windows cleanup functions** – Kill locked processes, retry file removal, handle drvfs cache refresh.
+
+### Changed
+- **VM module organization** – vm_client.rs → vm/client.rs; guest_daemon from busybox/ to vm/.
+- **libkrun kernel cmdline** – Optimize for WHPX performance (lpj, clocksource, idle, no_timer_check).
+- **init hostname** – Set hostname to localhost for VM guest.
+- **init Windows support** – Enable self install/remove/env list on Windows; unify with macOS.
+- **elf-loader handling** – ElfLoaderPlan enum for explicit planning; skip download on non-Linux.
+- **run VM detection** – e2e_backend_is_vm() for guest-side path handling.
+- **namespace brew mode** – Preserve system paths in PATH; mount env_root/usr for script shebangs.
+- **download chunking** – Cap active per-file chunks at 9; skip_chunking for pinned no-mirror hosts.
+- **store pkglines** – Simplify collect_store_pkglines; use consumed.json for detection.
+- **shell-wrapper.sh** – Enhanced tool wrapper script.
+- **mirror acceleration** – GOPROXY and mirror env vars fix for brew packages.
+- **Windows build** – Fix all build warnings for macOS and Windows cross-compilation.
+- **grep unicode-case** – Enable regex unicode-case feature for `-i` case-insensitive matching.
+- **VM mode unification** – Unified VM paths for Linux (namespace + single virtiofs) vs macOS/Windows (multiple virtiofs mounts).
+
+### Fixed
+- **libkrun vsock timing** – Fix Windows/WHPX vsock connection timing with retry loop and delay.
+- **libkrun POLLHUP** – Handle POLLHUP to drain all remaining data; prevent missing Exit message.
+- **libkrun HVF exit code** – Fix exit code propagation on macOS HVF.
+- **vm guest daemon hang** – Fix fork child stdio; pipe deadlock; BusyBox time hang with nonexistent commands.
+- **vm stdin forwarding** – Spawn stdin thread only for PTY mode; proper stream shutdown.
+- **vm batch/stream waitpid** – Fix hang with BusyBox time command.
+- **brew Cellar version** – Fix version mismatch between unpack and link stages; dylib path resolution.
+- **brew post_install** – Run inside namespace for correct path resolution (SSL cert symlink).
+- **brew HOMEBREW_PREFIX** – Fix PATH and guest path handling; use SHORT_PREFIX for post_install.
+- **brew dylib rewriting** – Fix Frameworks/opt symlinks; handle noarch bottles like ca-certificates.
+- **Windows symlink** – Fix symlink creation with parent dir and symlink type fallback.
+- **Windows path** – Fix filesystem info, path separator, junction detection.
+- **Windows NTFS EA** – Set NTFS EA for executable binaries on Windows.
+- **Windows named pipe** – Fix double-close bug, data transmission with FlushFileBuffers.
+- **Windows vmlinux** – Fix symlink creation on Windows for kernel.
+- **expose script interpreter** – Resolve ebin file type from env when store path is consumed.
+- **expose Windows cross-compile** – Fix #[cfg(unix)] gates for is_brew_environment().
+- **link Move fallback** – Copy+delete when Move across filesystems.
+- **link usr/libexec** – Fix "File exists" error when creating directory.
+- **link trailing slash** – Fix mirror_dir() for directory creation.
+- **store restore** – Fix restore failure with stale consumed stores.
+- **store integrity** – Fix mtree path unescaping; allow meta-packages with empty filelist.
+- **download APK gzip** – Add integrity validation to detect corrupted cache files.
+- **download VM detection** – Fix false positive "Another download process is already active".
+- **download chunk tasks** – Split helpers for better code organization.
+- **install dry-run** – Fix attempting to expose packages in dry-run mode.
+- **install scriptlets VM** – Run Linux scriptlets in VM on Windows/macOS hosts.
+- **install disk space** – Enforce check to prevent ENOSPC errors.
+- **namespace brew** – Auto-mount Windows drives from /mnt in VM mode.
+- **namespace ID mapping** – Fix WSL2 user namespace timing; child writes own uid/gid maps.
+- **namespace DNS** – Mount /etc/hosts and /etc/resolv.conf for DNS resolution.
+- **namespace cwd** – Preserve current working directory in --isolate=fs mode.
+- **scriptlets interpreter** – Fix interpreter path for VM reused sessions.
+- **scriptlets host_path** – Don't canonicalize host_path in host_path_to_guest_path().
+- **dev-projects clang** – Support versioned clang binaries (e.g., clang-21).
+- **dev-projects crystal** – Use brew's bash instead of host /bin/sh in namespace.
+- **dev-projects rust** – Fix shell history expansion issue in println!() macro.
+- **tool_wrapper GOPROXY** – Fix GOPROXY and mirror env vars for brew packages.
+- **tar_extract Windows** – Fix hard links, symlink path separator, case sensitivity.
+- **lfs Windows** – Fix symlink path separator, rename with MoveFileEx.
+- **utils Windows** – Implement process_exists() for download PID checks.
+- **utils path** – Normalize mixed path separators; sanitize Windows-illegal chars.
+- **init lib64 symlink** – Change warning to debug log, add fallback to Fs mode.
+- **init --force** – Fix flag handling in self install command.
+- **init kernel download** – Fix for aarch64/riscv64 architectures.
+- **init RLIMIT_NOFILE** – Fix hard limit stuck at 4096 by setting fs.nr_open first.
+- **init missing file** – Fix missing init file in self environment on Windows/macOS.
+- **qemu virtio** – Use PCI instead of MMIO for x86_64; fix virtiofs root mount on aarch64.
+- **qemu ARM64** – Use Kunpeng-920/930 with auto-detection; fix missing machine type.
+- **qemu rootdelay** – Remove from kernel cmdline; conditional based on filesystem type.
+- **busybox applets** – Fix applet symlinks for cross-platform environments; correct epkg binary based on env distro.
+- **busybox init** – Fix console dup for nix 0.30.
+- **build warnings** – Fix all warnings for macOS, Windows, riscv64 cross-compilation.
+- **rpm_verify** – Quiet unnecessary log warn.
+- **Windows path handling** – DOS path conversion in deserialize_env_config_for; normalize path separators.
+- **Windows virtiofs mounts** – Mount to converted Linux guest paths; DOS paths from env.yaml work correctly.
+- **init hang on WHPX** – Use UTC time, skip clap parsing for init mode, create ready pipe before VM config.
+- **PowerShell parameter ambiguity** – Remove [CmdletBinding] to allow -e/-r/-q/-v options.
+- **Guest command path** – Convert backslashes to forward slashes for Linux guest.
+- **Guest ready timeout** – 5 minutes for Windows (virtiofs slow on WHPX).
+- **Windows process termination** – TerminateProcess with PROCESS_TERMINATE access.
+- **Self install on Windows** – Skip premature env_config() call in finalize_windows_tar_symlinks.
+- **deinit already-removed** – Detect state to prevent repeated "remove" output; check epkg markers in RC files.
+- **deinit cyclic symlinks** – Use symlink_metadata() to avoid infinite recursion on cyclic symlinks.
+- **percent_encode type** – Pass &str instead of String to percent_encode().
+- **Nested -e namespace** – Check if requested env equals current before skipping namespace isolation.
+- **VM guest env discovery** – Prioritize EPKG env vars, fix registered env search, decode __root__ names.
+- **VM-needed format init** – Create init hardlink/copy for Deb/Rpm/Apk/Pacman on Linux hosts.
+
+### Statistics
+- **1052 commits, 296 files changed, 50071 insertions(+), 9201 deletions(-)**
+
+---
+
 ## [v0.2.4] – 2026-03-12
 
 ### Added
