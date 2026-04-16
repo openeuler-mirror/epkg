@@ -229,9 +229,13 @@ fn collect_global_deinit_plan() -> Result<DeinitPlan> {
         plan.symlinks_to_remove.push(usr_local_bin_epkg);
     }
 
-    // Update global shell rc files
+    // Update global shell rc files - only add those that contain epkg content
     let global_shell_rcs = crate::dirs::get_global_shell_rc()?;
-    plan.shell_rc_files.extend(global_shell_rcs);
+    for rc in global_shell_rcs {
+        if rc_file_has_epkg(&rc) {
+            plan.shell_rc_files.push(rc);
+        }
+    }
 
     Ok(plan)
 }
@@ -290,14 +294,21 @@ fn collect_user_personal_plan() -> Result<DeinitPlan> {
             plan.symlinks_to_remove.push(home_bin_epkg);
         }
 
-        // Update user shell rc files
+        // Update user shell rc files - only add those that contain epkg content
         let user_shell_rcs = crate::dirs::get_user_shell_rc(&PathBuf::from(&home_dir))?;
-        plan.shell_rc_files.extend(user_shell_rcs);
+        for rc in user_shell_rcs {
+            if rc_file_has_epkg(&rc) {
+                plan.shell_rc_files.push(rc);
+            }
+        }
     }
 
     for ps in crate::dirs::powershell_profile_paths() {
         if lfs::exists_on_host(&ps) {
-            plan.shell_rc_files.push(ps.to_string_lossy().into_owned());
+            let ps_str = ps.to_string_lossy().into_owned();
+            if rc_file_has_epkg(&ps_str) {
+                plan.shell_rc_files.push(ps_str);
+            }
         }
     }
 
@@ -568,6 +579,22 @@ pub(crate) fn force_remove_dir_all_with_progress<P: AsRef<Path>>(path: P) -> Res
     match remove_dir_all_recursive_with_progress(path) {
         Ok(()) => Ok(()),
         Err(_e) => force_remove_dir_all(path),
+    }
+}
+
+/// Check if an RC file contains epkg initialization markers.
+/// Returns true only if both "# epkg begin" and "# epkg end" markers are present.
+fn rc_file_has_epkg(rc_file_path: &str) -> bool {
+    let path = Path::new(rc_file_path);
+    if !lfs::exists_on_host(path) {
+        return false;
+    }
+
+    match fs::read_to_string(path) {
+        Ok(content) => {
+            content.contains("# epkg begin") && content.contains("# epkg end")
+        }
+        Err(_) => false,
     }
 }
 
