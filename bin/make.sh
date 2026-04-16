@@ -1900,8 +1900,8 @@ cross-macos() {
     local mode="${2:-debug}"
 
     if [[ "$arch" != "aarch64" ]]; then
-        echo "Warning: macOS x86_64 is not supported by libkrun (Hypervisor.framework limitation)"
-        echo "         Building without libkrun support..."
+        echo "Notice: macOS x86_64 is not supported by libkrun (Hypervisor.framework limitation)"
+        echo "        Building without libkrun support..."
     fi
 
     # Always build Linux binary first - needed for VM mode deployment
