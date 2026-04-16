@@ -1912,14 +1912,22 @@ cross-macos() {
     local arch="${1:-aarch64}"
     local mode="${2:-debug}"
 
+    # Detect host OS
+    local host_os=$(uname -s)
+    local is_macos=false
+    [[ "$host_os" == "Darwin" ]] && is_macos=true
+
     if [[ "$arch" != "aarch64" ]]; then
         echo "Notice: macOS x86_64 is not supported by libkrun (Hypervisor.framework limitation)"
         echo "        Building without libkrun support..."
     fi
 
-    # Always build Linux binary first - needed for VM mode deployment
-    # Unconditional: code may have changed even if binary exists
-    build_static "$arch" "$mode"
+    # Build Linux binary first only when running from macOS host
+    # (for VM mode deployment). Skip when running from Linux host
+    # to avoid redundant build - Linux binary should be built separately.
+    if [[ "$is_macos" == "true" ]]; then
+        build_static "$arch" "$mode"
+    fi
 
     local target=""
     case "$arch" in
@@ -1971,28 +1979,25 @@ cross-macos() {
 
     echo "[BUILD-OK] macOS ($arch, $mode): target/$target/$build_dir/$BINARY_NAME"
 
-    # Path to the locally built Linux ELF (epkg-linux-$arch) for macOS VM mode
-    local linux_target=$(get_rust_target "$arch")
-    local linux_epkg="${PROJECT_ROOT}/target/${linux_target}/${build_dir}/${BINARY_NAME}"
-
     # Deploy macOS binary to dist/
     if [[ "$mode" == "release" ]]; then
         deploy_release_binary "target/$target/$build_dir/$BINARY_NAME" "epkg-macos-${arch}"
     fi
 
-    # Deploy Linux ELF to dist/ (for VM guest init)
-    if [[ -f "$linux_epkg" ]]; then
-        deploy_release_binary "$linux_epkg" "epkg-linux-${arch}"
-        # Deploy Linux ELF to self environment (for VM guest init)
-        install_hardlink "$linux_epkg" "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
-        echo "[DEPLOY-hardlink] $DEV_ENV_BIN_DIR/epkg-linux-${arch}"
-    else
-        echo "[WARN] Linux epkg not found at $linux_epkg - run 'make' first for full VM support"
-    fi
-
-    # Update hardlinks in all environments (non-self envs like alpine)
-    if [[ -f "$linux_epkg" ]]; then
-        update_all_env_hardlinks "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+    # Deploy Linux ELF to dist/ (for VM guest init) - only when running from macOS
+    if [[ "$is_macos" == "true" ]]; then
+        local linux_target=$(get_rust_target "$arch")
+        local linux_epkg="${PROJECT_ROOT}/target/${linux_target}/${build_dir}/${BINARY_NAME}"
+        if [[ -f "$linux_epkg" ]]; then
+            deploy_release_binary "$linux_epkg" "epkg-linux-${arch}"
+            # Deploy Linux ELF to self environment (for VM guest init)
+            install_hardlink "$linux_epkg" "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+            echo "[DEPLOY-hardlink] $DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+            # Update hardlinks in all environments (non-self envs like alpine)
+            update_all_env_hardlinks "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+        else
+            echo "[WARN] Linux epkg not found at $linux_epkg"
+        fi
     fi
 
     echo "[DONE] cross-macos completed"
@@ -2007,6 +2012,12 @@ cross-windows() {
     local arch="${1:-x86_64}"
     local mode="${2:-debug}"
 
+    # Detect if running in WSL2
+    local is_wsl2=false
+    if is_wsl2; then
+        is_wsl2=true
+    fi
+
     if [[ "$arch" != "x86_64" ]]; then
         echo "Error: Windows cross-compilation only supports x86_64 architecture"
         echo "       aarch64 is not supported due to missing mingw-w64 libraries"
@@ -2016,9 +2027,12 @@ cross-windows() {
     # Ensure mingw-w64 cross-compiler is available (auto-install on WSL2/Debian)
     ensure_cross_windows_depends || exit 1
 
-    # Always build Linux binary first - needed for VM mode deployment
-    # Unconditional: code may have changed even if binary exists
-    build_static x86_64 "$mode"
+    # Build Linux binary first only when running from WSL2
+    # (for VM mode deployment). Skip when running from pure Linux host
+    # to avoid redundant build - Linux binary should be built separately.
+    if [[ "$is_wsl2" == "true" ]]; then
+        build_static x86_64 "$mode"
+    fi
 
     local target="$RUST_TARGET_X86_64_WINDOWS"
 
@@ -2077,26 +2091,26 @@ cross-windows() {
 
     echo "[BUILD-OK] Windows ($arch, $mode): target/$target/$build_dir/${BINARY_NAME}.exe"
 
-    # Path to the locally built Linux ELF (epkg-linux-$arch) for native Windows VM mode
-    local linux_epkg="${PROJECT_ROOT}/target/${RUST_TARGET_X86_64}/${build_dir}/${BINARY_NAME}"
-
     # Deploy Windows binary to dist/
     deploy_release_binary "target/$target/$build_dir/${BINARY_NAME}.exe" "epkg-windows-${arch}.exe"
 
     # Deploy Windows binary to native Windows self environment (best-effort, handles "file in use")
     deploy_to_windows_self "target/$target/$build_dir/${BINARY_NAME}.exe" "epkg.exe" || true
-    # Also deploy the locally built Linux ELF to dist/
-    if [[ -f "$linux_epkg" ]]; then
-        deploy_release_binary "$linux_epkg" "epkg-linux-${arch}"
-        # Deploy Linux ELF to Windows self environment (for VM guest init)
-        deploy_to_windows_self "$linux_epkg" "epkg-linux-${arch}" || true
-    else
-        echo "[WARN] Linux epkg not found at $linux_epkg - run 'make' first for full VM support"
+
+    # Deploy Linux ELF to dist/ and Windows self (for VM guest init) - only when running from WSL2
+    if [[ "$is_wsl2" == "true" ]]; then
+        local linux_epkg="${PROJECT_ROOT}/target/${RUST_TARGET_X86_64}/${build_dir}/${BINARY_NAME}"
+        if [[ -f "$linux_epkg" ]]; then
+            deploy_release_binary "$linux_epkg" "epkg-linux-${arch}"
+            # Deploy Linux ELF to Windows self environment (for VM guest init)
+            deploy_to_windows_self "$linux_epkg" "epkg-linux-${arch}" || true
+            # Update hardlinks in all environments (non-self envs like alpine)
+            update_all_env_hardlinks "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
+        else
+            echo "[WARN] Linux epkg not found at $linux_epkg"
+        fi
     fi
-    # Update hardlinks in all environments (non-self envs like alpine)
-    if [[ -f "$linux_epkg" ]]; then
-        update_all_env_hardlinks "$DEV_ENV_BIN_DIR/epkg-linux-${arch}"
-    fi
+
     # Only sign for release mode
     if [[ "$mode" == "release" ]]; then
         :
