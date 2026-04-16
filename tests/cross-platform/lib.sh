@@ -464,7 +464,11 @@ test_suite_history() {
     fi
 
     # epkg restore - restore to previous generation
+    # Need to create at least one generation first by installing a package
     if ! echo "$skip_list" | grep -qw "restore"; then
+        # Install a package to create generation 1
+        run_install jq || return 1
+        # Now restore to generation 0 (before jq was installed)
         epkg restore -1
     fi
 
@@ -602,9 +606,11 @@ test_suite_run() {
     local py_cmd="$(_get_python_cmd)"
 
     # epkg run with python (reliable cross-platform)
+    # First install python, then test running it
     if ! echo "$skip_list" | grep -qw "run_python"; then
-        # Try to run first, if fails (e.g., after GC), reinstall
-        run $py_cmd --version 2>/dev/null || run_install python || return 1
+        # Install python first
+        run_install python || return 1
+        # Now test running it
         run $py_cmd --version || return 1
     fi
 
