@@ -11,6 +11,28 @@ pub struct SeqOptions {
     pub format: Option<String>,
     pub separator: String,
     pub equal_width: bool,
+    // Width of input strings (for -w option)
+    pub first_width: usize,
+    pub last_width: usize,
+    pub incr_width: usize,
+}
+
+/// Get the display width of an input string (digits before decimal point)
+/// For example, "003" -> 3, "005" -> 3, "04" -> 2
+fn get_string_width(s: &str) -> usize {
+    // Find the part before decimal point (if any)
+    let before_dot = if let Some(pos) = s.find('.') {
+        &s[..pos]
+    } else {
+        s
+    };
+    // Remove leading minus sign if present
+    let without_sign = if before_dot.starts_with('-') || before_dot.starts_with('+') {
+        &before_dot[1..]
+    } else {
+        before_dot
+    };
+    without_sign.len()
 }
 
 /// Parse a number string (integer or floating-point)
@@ -49,21 +71,24 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<SeqOptions> {
         .unwrap_or_default();
 
     // Parse arguments: seq [FIRST [INCREMENT]] LAST
-    let (first, increment, last, precision) = match numbers.len() {
+    let (first, increment, last, precision, first_width, last_width, incr_width) = match numbers.len() {
         1 => {
             let last_str = &numbers[0];
             let last = parse_number(last_str)?;
             let prec = count_decimal_places(last_str);
-            (1.0, 1.0, last, prec)
+            let width = get_string_width(last_str);
+            (1.0, 1.0, last, prec, 1, width, 1)
         }
         2 => {
             let first_str = &numbers[0];
             let last_str = &numbers[1];
             let first = parse_number(first_str)?;
             let last = parse_number(last_str)?;
-            let increment = if first <= last { 1.0 } else { -1.0 };
+            let increment = 1.0;
             let prec = count_decimal_places(first_str).max(count_decimal_places(last_str));
-            (first, increment, last, prec)
+            let first_width = get_string_width(first_str);
+            let last_width = get_string_width(last_str);
+            (first, increment, last, prec, first_width, last_width, 1)
         }
         3 => {
             let first_str = &numbers[0];
@@ -72,13 +97,13 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<SeqOptions> {
             let first = parse_number(first_str)?;
             let increment = parse_number(incr_str)?;
             let last = parse_number(last_str)?;
-            if increment == 0.0 {
-                return Err(eyre!("seq: zero increment"));
-            }
-            let prec = count_decimal_places(first_str)
-                .max(count_decimal_places(incr_str))
-                .max(count_decimal_places(last_str));
-            (first, increment, last, prec)
+            // For three arguments, precision is determined by increment's precision
+            // This matches GNU seq behavior: seq 3 .30 4.000 outputs 3.00, 3.30, etc.
+            let prec = count_decimal_places(incr_str);
+            let first_width = get_string_width(first_str);
+            let incr_width = get_string_width(incr_str);
+            let last_width = get_string_width(last_str);
+            (first, increment, last, prec, first_width, last_width, incr_width)
         }
         _ => {
             return Err(eyre!("seq: too many arguments"));
@@ -102,6 +127,9 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<SeqOptions> {
         format,
         separator,
         equal_width,
+        first_width,
+        last_width,
+        incr_width,
     })
 }
 
@@ -374,8 +402,11 @@ fn format_number_with_precision(num: f64, precision: usize) -> String {
 }
 
 /// Check if sequence iteration is done
+/// For zero increment, never done (infinite loop, limited by caller)
 fn is_done(current: f64, last: f64, increment: f64) -> bool {
-    if increment > 0.0 {
+    if increment == 0.0 {
+        false  // Never done for zero increment
+    } else if increment > 0.0 {
         current > last
     } else {
         current < last
@@ -390,6 +421,7 @@ pub fn run(options: SeqOptions) -> Result<()> {
     let default_precision = options.precision;
 
     // Determine if the sequence is valid (increment should lead toward last)
+    // For zero increment, we just output the first value repeatedly (caller limits with head)
     if increment > 0.0 && first > last {
         return Ok(()); // Empty sequence
     }
@@ -399,7 +431,9 @@ pub fn run(options: SeqOptions) -> Result<()> {
 
     // Handle -w (equal width) option
     if options.equal_width {
-        // Calculate maximum width needed
+        // Use the maximum width from input strings
+        let max_input_width = options.first_width.max(options.last_width).max(options.incr_width);
+
         let precision = if let Some(ref fmt) = options.format {
             // Extract precision from format string
             if let Some(pos) = fmt.find('.') {
@@ -420,36 +454,22 @@ pub fn run(options: SeqOptions) -> Result<()> {
             default_precision
         };
 
-        // Calculate max width: find the largest absolute value and its integer part width
-        let first_abs = first.abs();
-        let last_abs = last.abs();
-        let max_abs = first_abs.max(last_abs);
-
-        // Integer part width
-        let max_int_part = if precision == 0 {
-            max_abs.round() as i64
+        // Total width including decimal part if precision > 0
+        let total_width = if precision > 0 {
+            max_input_width + 1 + precision  // integer part + dot + decimal part
         } else {
-            max_abs.floor() as i64
-        };
-        let base_int_width = if max_int_part == 0 { 1 } else { max_int_part.to_string().len() };
-
-        // Check if sequence includes negative numbers
-        let has_negative = (increment > 0.0 && first < 0.0) ||
-                          (increment < 0.0 && last < 0.0) ||
-                          (first < 0.0 && last < 0.0);
-
-        // Width for positive numbers (including potential sign space)
-        let int_width = if has_negative {
-            base_int_width + 1  // Extra space for potential sign
-        } else {
-            base_int_width
+            max_input_width
         };
 
         // Generate sequence
         let mut output = String::new();
         let mut current = first;
+        // For zero increment, limit output to prevent infinite loop
+        let max_iterations = if increment == 0.0 { 10000 } else { usize::MAX };
+        let mut iteration = 0;
 
-        while !is_done(current, last, increment) {
+        while !is_done(current, last, increment) && iteration < max_iterations {
+            iteration += 1;
             let formatted = if let Some(ref fmt) = options.format {
                 format_with_printf(fmt, current)?
             } else {
@@ -458,19 +478,17 @@ pub fn run(options: SeqOptions) -> Result<()> {
                     if precision == 0 {
                         let int_val = current.round() as i64;
                         let abs_val = int_val.abs();
-                        format!("-{:0>width$}", abs_val, width = int_width - 1)
+                        format!("-{:0>width$}", abs_val, width = total_width - 1)
                     } else {
                         let abs_val = current.abs();
-                        let total_width = int_width + precision;  // int_width includes space for '-'
                         format!("-{:0>width$.prec$}", abs_val, width = total_width - 1, prec = precision)
                     }
                 } else {
                     // Positive or zero: pad with leading zeros
                     if precision == 0 {
                         let int_val = current.round() as i64;
-                        format!("{:0>width$}", int_val, width = int_width)
+                        format!("{:0>width$}", int_val, width = total_width)
                     } else {
-                        let total_width = int_width + 1 + precision;
                         format!("{:0>width$.prec$}", current, width = total_width, prec = precision)
                     }
                 }
@@ -485,6 +503,11 @@ pub fn run(options: SeqOptions) -> Result<()> {
 
             current += increment;
 
+            // For zero increment, don't check bounds
+            if increment == 0.0 {
+                continue;
+            }
+
             // Avoid infinite loop due to floating-point precision issues
             if increment > 0.0 && current > last + increment.abs() {
                 break;
@@ -495,9 +518,8 @@ pub fn run(options: SeqOptions) -> Result<()> {
         }
 
         print!("{}", output);
-        if separator != "\n" {
-            println!();
-        }
+        // Always add trailing newline
+        println!();
         return Ok(());
     }
 
@@ -505,8 +527,12 @@ pub fn run(options: SeqOptions) -> Result<()> {
     if let Some(ref fmt) = options.format {
         let mut output = String::new();
         let mut current = first;
+        // For zero increment, limit output to prevent infinite loop
+        let max_iterations = if increment == 0.0 { 10000 } else { usize::MAX };
+        let mut iteration = 0;
 
-        while !is_done(current, last, increment) {
+        while !is_done(current, last, increment) && iteration < max_iterations {
+            iteration += 1;
             let formatted = format_with_printf(fmt, current)?;
 
             if output.is_empty() {
@@ -518,6 +544,11 @@ pub fn run(options: SeqOptions) -> Result<()> {
 
             current += increment;
 
+            // For zero increment, don't check bounds
+            if increment == 0.0 {
+                continue;
+            }
+
             // Avoid infinite loop due to floating-point precision issues
             if increment > 0.0 && current > last + increment.abs() {
                 break;
@@ -528,9 +559,8 @@ pub fn run(options: SeqOptions) -> Result<()> {
         }
 
         print!("{}", output);
-        if separator != "\n" {
-            println!();
-        }
+        // Always add trailing newline
+        println!();
         return Ok(());
     }
 
@@ -539,7 +569,14 @@ pub fn run(options: SeqOptions) -> Result<()> {
     let mut current = first;
     let mut first_output = true;
 
-    while !is_done(current, last, increment) {
+    // For zero increment, limit output to prevent infinite loop
+    // GNU seq outputs infinite stream, but we limit to reasonable number
+    // (caller can use head to limit further)
+    let max_iterations = if increment == 0.0 { 10000 } else { usize::MAX };
+    let mut iteration = 0;
+
+    while !is_done(current, last, increment) && iteration < max_iterations {
+        iteration += 1;
         let formatted = format_number_with_precision(current, default_precision);
 
         if first_output {
@@ -552,6 +589,12 @@ pub fn run(options: SeqOptions) -> Result<()> {
 
         current += increment;
 
+        // For zero increment, don't check bounds (stay at first)
+        if increment == 0.0 {
+            // Output is limited by max_iterations above
+            continue;
+        }
+
         // Avoid infinite loop due to floating-point precision issues
         if increment > 0.0 && current > last + increment.abs() {
             break;
@@ -562,7 +605,10 @@ pub fn run(options: SeqOptions) -> Result<()> {
     }
 
     print!("{}", output);
-    if separator != "\n" {
+    // Always add trailing newline when separator is newline
+    if separator == "\n" {
+        println!();
+    } else {
         println!();
     }
 
