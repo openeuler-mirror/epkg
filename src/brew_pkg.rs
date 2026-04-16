@@ -1164,12 +1164,12 @@ fn rewrite_dylib_paths_for_file_in_env(mach_o_path: &Path, env_root: &Path) -> R
     // Execute install_name_tool
     if !changes.is_empty() || id_changed {
         install_name_cmd.arg(mach_o_path);
-        let status = install_name_cmd
-            .status()
+        let output = install_name_cmd
+            .output()
             .wrap_err_with(|| format!("Failed to run install_name_tool on {}", mach_o_path.display()))?;
 
-        if !status.success() {
-            log::warn!("install_name_tool failed for {}", mach_o_path.display());
+        if !output.status.success() {
+            log::warn!("install_name_tool failed for {}: {}", mach_o_path.display(), String::from_utf8_lossy(&output.stderr).trim());
         }
     }
 
