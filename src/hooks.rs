@@ -1570,6 +1570,7 @@ pub fn execute_hook(
     }
 
     log::info!("Executing hook {}: {} {:?}", hook.file_path, command, args);
+    println!("Running hook: {}", hook.file_path);
 
     let env_vars = HashMap::new();
     // For hooks with NeedsTargets, matched file paths are passed via stdin

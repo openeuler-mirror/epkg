@@ -681,6 +681,9 @@ fn try_scriptlet_interpreter_loop(
         #[cfg(target_os = "linux")]
         let interpreter_guest_path: std::path::PathBuf = interpreter_path.clone();
 
+        // Show script path before execution so user knows where subsequent output comes from
+        println!("Running scriptlet: {}", script_path.display());
+
         // Inherit VM settings from active VM reuse session during install/upgrade.
         // This allows scriptlets to reuse the same VM that was created for the main command,
         // avoiding the overhead of starting a new VM for each scriptlet (~2-3 seconds each).
