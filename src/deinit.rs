@@ -671,7 +671,9 @@ pub fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
         .map_err(|e| eyre::eyre!("Failed to remove directory: {}", e))
 }
 
-/// Finds all read-only directories within the given path
+/// Finds all read-only directories within the given path.
+/// Uses symlink_metadata to avoid following symlinks and prevent infinite recursion
+/// on cyclic symlink structures.
 #[cfg(unix)]
 pub fn find_readonly_dirs<P: AsRef<Path>>(root: P) -> Result<Vec<PathBuf>> {
     let mut readonly_dirs = Vec::new();
@@ -679,17 +681,28 @@ pub fn find_readonly_dirs<P: AsRef<Path>>(root: P) -> Result<Vec<PathBuf>> {
 
     while let Some(dir) = dir_stack.pop() {
         // Check if current directory is read-only
-        if let Ok(metadata) = lfs::metadata_on_host(&dir) {
-            if metadata.permissions().readonly() {
+        // Use symlink_metadata to avoid following symlinks
+        if let Ok(metadata) = lfs::symlink_metadata(&dir) {
+            // Skip symlinks - they should be removed separately, not recursed into
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() && metadata.permissions().readonly() {
                 readonly_dirs.push(dir.clone());
             }
         }
 
         // Add subdirectories to stack
+        // Use symlink_metadata to detect symlinks and avoid following them
         if let Ok(entries) = fs::read_dir(&dir) {
             for entry in entries.flatten() {
-                if entry.path().is_dir() {
-                    dir_stack.push(entry.path());
+                let path = entry.path();
+                // Check if it's a real directory (not a symlink pointing to directory)
+                if let Ok(meta) = lfs::symlink_metadata(&path) {
+                    // Only add real directories to stack; skip symlinks
+                    if meta.is_dir() && !meta.file_type().is_symlink() {
+                        dir_stack.push(path);
+                    }
                 }
             }
         }
