@@ -68,8 +68,12 @@ error() {
 }
 
 # Remove existing environment before creating (leave for debug after test)
-log "Removing existing test environment if present"
-"$EPKG_BIN" env remove "$TEST_ENV" -y 2>&1 | tee -a "$LOG_FILE" || true
+# Only remove if the env directory actually exists to avoid noisy error
+TEST_ENV_DIR="$HOME/.epkg/envs/$TEST_ENV"
+if [ -d "$TEST_ENV_DIR" ]; then
+    log "Removing existing test environment: $TEST_ENV"
+    "$EPKG_BIN" env remove "$TEST_ENV" -y 2>&1 | tee -a "$LOG_FILE" || true
+fi
 
 log "Starting sandbox isolation modes test"
 log "Log file: $LOG_FILE"
