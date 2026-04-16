@@ -32,7 +32,10 @@ mkdir -p "$E2E_LOG_DIR"
 
 # Ensure Alpine-based harness environment exists (bash + busybox for tests / sh -c)
 ensure_e2e_bare_env() {
-	if "$EPKG_BINARY" -e "$E2E_BARE_ENV" list; then
+	# Check if environment config file exists (more reliable than running epkg -e list
+	# which may panic when environment doesn't exist)
+	E2E_BARE_ENV_BASE="$HOME/.epkg/envs/$E2E_BARE_ENV"
+	if [ -f "$E2E_BARE_ENV_BASE/etc/epkg/env.yaml" ]; then
 		return 0
 	fi
 	echo "Creating in-vm harness environment '$E2E_BARE_ENV' (channel alpine)..." >&2
