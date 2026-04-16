@@ -1305,40 +1305,52 @@ add_musl_compat_to_mlua() {
     local rust_target=$(get_rust_target "$arch")
     local build_dir="$2"  # "debug" or "release"
 
-    # Find mlua-sys output directory
-    local mlua_lib_dir=$(find "$PROJECT_ROOT/target/$rust_target/$build_dir/build" -type d -name "out" -path "*mlua-sys*" 2>/dev/null | head -1)
-    if [[ -z "$mlua_lib_dir" ]]; then
+    # Find all mlua-sys output directories
+    # Cargo may rebuild mlua-sys with different features, creating multiple directories.
+    # We need to add shims to ALL of them to ensure the final link uses the shimmed library.
+    local mlua_lib_dirs=$(find "$PROJECT_ROOT/target/$rust_target/$build_dir/build" -type d -name "out" -path "*mlua-sys*" 2>/dev/null)
+    if [[ -z "$mlua_lib_dirs" ]]; then
         return 0  # mlua-sys not built yet or not found
     fi
 
-    local mlua_lib="$mlua_lib_dir/lib/liblua5.4.a"
-    if [[ ! -f "$mlua_lib" ]]; then
-        return 0  # library not found
-    fi
-
-    # Check if musl_compat.o is already in the library
-    if ar t "$mlua_lib" 2>/dev/null | grep -q "musl_compat.o"; then
-        return 0  # already added
-    fi
-
-    # Compile musl_compat.c for this architecture
     local compiler=$(get_c_compiler "$arch" "musl")
-    local musl_compat_o="$mlua_lib_dir/musl_compat.o"
+    local added_count=0
 
-    echo "Adding musl compatibility shims to mlua-sys's Lua library..."
-    $compiler -O2 -Wall -fPIC -D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE \
-        -c -o "$musl_compat_o" "$PROJECT_ROOT/lib/musl_compat.c" || {
-        echo "Warning: Failed to compile musl_compat.c for $arch" >&2
-        return 1
-    }
+    # Process each mlua-sys directory
+    while IFS= read -r mlua_lib_dir; do
+        local mlua_lib="$mlua_lib_dir/lib/liblua5.4.a"
+        if [[ ! -f "$mlua_lib" ]]; then
+            continue  # library not found in this directory
+        fi
 
-    # Add to the library
-    ar rs "$mlua_lib" "$musl_compat_o" || {
-        echo "Warning: Failed to add musl_compat.o to mlua-sys library" >&2
-        return 1
-    }
+        # Check if musl_compat.o is already in the library
+        if ar t "$mlua_lib" 2>/dev/null | grep -q "musl_compat.o"; then
+            continue  # already added to this library
+        fi
 
-    echo "Added musl compatibility shims to $mlua_lib"
+        # Compile musl_compat.c for this architecture
+        local musl_compat_o="$mlua_lib_dir/musl_compat.o"
+
+        if [[ $added_count -eq 0 ]]; then
+            echo "Adding musl compatibility shims to mlua-sys's Lua library..."
+        fi
+
+        $compiler -O2 -Wall -fPIC -D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE \
+            -c -o "$musl_compat_o" "$PROJECT_ROOT/lib/musl_compat.c" || {
+            echo "Warning: Failed to compile musl_compat.c for $arch" >&2
+            return 1
+        }
+
+        # Add to the library
+        ar rs "$mlua_lib" "$musl_compat_o" || {
+            echo "Warning: Failed to add musl_compat.o to mlua-sys library" >&2
+            return 1
+        }
+
+        echo "Added musl compatibility shims to $mlua_lib"
+        added_count=$((added_count + 1))
+    done <<< "$mlua_lib_dirs"
+
     return 0
 }
 
@@ -1644,12 +1656,6 @@ build_static() {
         fi
     fi
 
-    # Build the binary (optionally with extra Cargo features)
-    local cargo_feature_args=()
-    if [[ -n "$cargo_features" ]]; then
-        cargo_feature_args=(--features "$cargo_features")
-    fi
-
     local build_dir
     if [[ "$mode" == "release" ]]; then
         build_dir="release"
@@ -1663,21 +1669,28 @@ build_static() {
     # we need to add musl compatibility shims to mlua-sys's Lua library.
     # This is because mlua-sys builds its own Lua which may reference *64 functions
     # that don't exist in musl libc.
-    # We pre-build mlua-sys first, add shims, then build everything else.
+    # Strategy: build everything first, then add shims to ALL mlua-sys directories,
+    # and rebuild to trigger re-linking with shimmed library.
     # Note: On macOS/Windows, we don't need this since we don't use Lua.
+    local need_musl_compat=false
     if [[ "$is_macos" == "false" && "$is_windows" == "false" ]] && [[ "$CC" != "musl-gcc" ]]; then
-        # Pre-build mlua (and mlua-sys) to generate Lua library before main build
-        # We build just the lua-related deps first so we can add musl shims
-        echo "Pre-building mlua for $arch to add musl compatibility shims..."
-        # Build mlua and its dependencies (including mlua-sys) only
-        cargo build --target "$rust_target" --ignore-rust-version "${cargo_args[@]}" --package mlua 2>&1 || true
+        need_musl_compat=true
+    fi
 
-        # Add musl compatibility shims to mlua-sys's Lua library
+    # Build the binary (optionally with extra Cargo features)
+    local cargo_feature_args=()
+    if [[ -n "$cargo_features" ]]; then
+        cargo_feature_args=(--features "$cargo_features")
+    fi
+
+    cargo build --target "$rust_target" --ignore-rust-version "${cargo_args[@]}" "${cargo_feature_args[@]}" || true
+
+    # Add musl compatibility shims after the build and rebuild to re-link
+    if [[ "$need_musl_compat" == "true" ]]; then
         add_musl_compat_to_mlua "$arch" "$build_dir"
 
-        # Now build everything (with shims already in place)
-        cargo build --target "$rust_target" --ignore-rust-version "${cargo_args[@]}" "${cargo_feature_args[@]}"
-    else
+        # Rebuild to trigger re-linking with shimmed library.
+        # Cargo will detect the library change and re-link, but won't recompile sources.
         cargo build --target "$rust_target" --ignore-rust-version "${cargo_args[@]}" "${cargo_feature_args[@]}"
     fi
 
