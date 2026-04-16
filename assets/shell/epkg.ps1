@@ -45,8 +45,7 @@ function Get-EpkgRustPath {
 }
 
 function epkg {
-    [CmdletBinding()]
-    param([Parameter(ValueFromRemainingArguments)][string[]]$ArgumentList)
+    $ArgumentList = $args
 
     $envSelfDir = Get-EpkgSelfEnvRoot
     if (-not $envSelfDir) {
