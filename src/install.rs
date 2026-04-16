@@ -746,7 +746,7 @@ fn wait_downloads_and_unpack(
     packages_to_install: &InstalledPackagesMap,
 ) -> Result<InstalledPackagesMap> {
     let mut aur_packages: InstalledPackagesMap = HashMap::new();
-    let mut unpack_handles: Vec<(String, JoinHandle<Result<(String, String)>>)> = Vec::new();
+    let mut unpack_handles: Vec<(String, String, JoinHandle<Result<(String, String)>>)> = Vec::new();
     let store_pkglines_by_pkgname = Arc::new(plan.store_pkglines_by_pkgname.clone());
     let unpack_workers = unpack_worker_count();
 
@@ -764,6 +764,7 @@ fn wait_downloads_and_unpack(
                     process_downloaded_pkgkey(
                         plan,
                         pkgkey,
+                        &completed_url,
                         packages_to_install,
                         &mut aur_packages,
                         &mut unpack_handles,
@@ -808,7 +809,7 @@ fn is_aur_pkgkey(_pkgkey: &str) -> bool {
 
 fn collect_unpack_result_for_plan(
     plan: &mut InstallationPlan,
-    (pkgkey, handle): (String, JoinHandle<Result<(String, String)>>),
+    (url, pkgkey, handle): (String, String, JoinHandle<Result<(String, String)>>),
 ) -> Result<()> {
     let (_actual_pkgkey, pkgline) = handle
         .join()
@@ -816,15 +817,18 @@ fn collect_unpack_result_for_plan(
     if let Some(plan_pkg_info) = plan.new_pkgs.get_mut(&pkgkey) {
         Arc::make_mut(plan_pkg_info).pkgline = pkgline;
     }
+    // Update progress bar to show "Unpacked" after unpack completes
+    download::finish_download_task_message(&url, format!("Unpacked {}", pkgkey));
     Ok(())
 }
 
 fn process_downloaded_pkgkey(
     plan: &mut InstallationPlan,
     pkgkey: &str,
+    url: &str,
     packages_to_install: &InstalledPackagesMap,
     aur_packages: &mut InstalledPackagesMap,
-    unpack_handles: &mut Vec<(String, JoinHandle<Result<(String, String)>>)>,
+    unpack_handles: &mut Vec<(String, String, JoinHandle<Result<(String, String)>>)>,
     store_pkglines_by_pkgname: &Arc<HashMap<String, Vec<String>>>,
     unpack_workers: usize,
 ) -> Result<()> {
@@ -839,14 +843,19 @@ fn process_downloaded_pkgkey(
         return Err(eyre!("Package key not found: {}", pkgkey));
     }
 
+    // Update progress bar to show "Unpacking" before starting unpack
+    if let Some(task) = download::DOWNLOAD_MANAGER.get_task(url) {
+        task.set_message(format!("Unpacking {}", pkgkey));
+    }
+
     if unpack_workers > 1 {
         while unpack_handles.len() >= unpack_workers {
             let completed = unpack_handles.remove(0);
             collect_unpack_result_for_plan(plan, completed)?;
         }
-        spawn_unpack_worker(pkgkey, unpack_handles, Arc::clone(store_pkglines_by_pkgname))?;
+        spawn_unpack_worker(pkgkey, url, unpack_handles, Arc::clone(store_pkglines_by_pkgname))?;
     } else {
-        unpack_binary_package_sync(plan, pkgkey, store_pkglines_by_pkgname)?;
+        unpack_binary_package_sync(plan, pkgkey, url, store_pkglines_by_pkgname)?;
     }
 
     Ok(())
@@ -854,14 +863,15 @@ fn process_downloaded_pkgkey(
 
 fn spawn_unpack_worker(
     pkgkey: &str,
-    unpack_handles: &mut Vec<(String, JoinHandle<Result<(String, String)>>)>,
+    url: &str,
+    unpack_handles: &mut Vec<(String, String, JoinHandle<Result<(String, String)>>)>,
     store_pkglines_by_pkgname: Arc<HashMap<String, Vec<String>>>,
 ) -> Result<()> {
     let file_path = get_package_file_path(pkgkey)?;
     let pkgkey_for_worker = pkgkey.to_string();
     let handle = std::thread::spawn(move || -> Result<(String, String)> {
         let package = crate::package_cache::load_package_info(&pkgkey_for_worker)
-            .map_err(|e| eyre!("Failed to load package info for {}: {}", pkgkey_for_worker, e))?;
+            .with_context(|| format!("Failed to load package info for {}", pkgkey_for_worker))?;
         crate::store::unpack_package(
             &file_path,
             &pkgkey_for_worker,
@@ -869,18 +879,19 @@ fn spawn_unpack_worker(
             Some(package.format),
         )
     });
-    unpack_handles.push((pkgkey.to_string(), handle));
+    unpack_handles.push((url.to_string(), pkgkey.to_string(), handle));
     Ok(())
 }
 
 fn unpack_binary_package_sync(
     plan: &mut InstallationPlan,
     pkgkey: &str,
+    url: &str,
     store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
 ) -> Result<()> {
     let file_path = get_package_file_path(pkgkey)?;
     let package = crate::package_cache::load_package_info(pkgkey)
-        .map_err(|e| eyre!("Failed to load package info for {}: {}", pkgkey, e))?;
+        .with_context(|| format!("Failed to load package info for {}", pkgkey))?;
     let (_actual_pkgkey, pkgline) = crate::store::unpack_package(
         &file_path,
         pkgkey,
@@ -890,5 +901,7 @@ fn unpack_binary_package_sync(
     if let Some(plan_pkg_info) = plan.new_pkgs.get_mut(pkgkey) {
         Arc::make_mut(plan_pkg_info).pkgline = pkgline;
     }
+    // Update progress bar to show "Unpacked" after unpack completes
+    download::finish_download_task_message(url, format!("Unpacked {}", pkgkey));
     Ok(())
 }

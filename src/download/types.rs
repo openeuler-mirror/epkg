@@ -30,8 +30,9 @@ use serde::{Deserialize, Serialize};
 pub struct DownloadFlags(u8);
 
 impl DownloadFlags {
-    pub const ADB: DownloadFlags = DownloadFlags(1 << 0);  // Alpine/Arch Database file
-    pub const LOCAL: DownloadFlags = DownloadFlags(1 << 1); // Local file (no download needed)
+    pub const ADB:     DownloadFlags = DownloadFlags(1 << 0);  // Alpine/Arch Database file
+    pub const LOCAL:   DownloadFlags = DownloadFlags(1 << 1);  // Local file (no download needed)
+    pub const PACKAGE: DownloadFlags = DownloadFlags(1 << 2);  // Package file (will be unpacked)
 
     pub const fn empty() -> Self {
         DownloadFlags(0)

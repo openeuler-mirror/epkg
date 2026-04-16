@@ -257,8 +257,15 @@ pub(crate) fn download_task(
     let _pid_cleanup_result = cleanup_pid_file(&pid_file);
 
     // Update progress bar based on result
+    // For package files (PACKAGE flag): use set_message to keep progress bar alive
+    // for unpacking status update. The progress bar will be finished later after unpacking.
+    // For other files (repo metadata, wget downloads): finish immediately.
     if result.is_ok() {
-        task.finish_with_message(format!("Downloaded {}", final_path.display()));
+        if task.flags.contains(DownloadFlags::PACKAGE) {
+            task.set_message(format!("Downloaded {}", final_path.display()));
+        } else {
+            task.finish_with_message(format!("Downloaded {}", final_path.display()));
+        }
     } else {
         task.finish_with_message(format!("Error: {:?}", result));
     }
@@ -596,7 +603,7 @@ pub fn enqueue_package_downloads(
             url.clone(),
             size,
             package.repodata_name.clone(),
-            DownloadFlags::empty(),
+            DownloadFlags::PACKAGE,  // Mark as package file that will be unpacked
             package.sha256sum.clone(),
             sha1sum,
         )

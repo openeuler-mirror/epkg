@@ -940,3 +940,11 @@ pub fn cancel_downloads() {
     DOWNLOAD_MANAGER.cancel();
 }
 
+/// Finish a download task's progress bar with a message
+/// This is used to update status after unpacking completes
+pub fn finish_download_task_message(url: &str, message: String) {
+    if let Some(task) = DOWNLOAD_MANAGER.get_task(url) {
+        task.finish_with_message(message);
+    }
+}
+

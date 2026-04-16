@@ -42,7 +42,7 @@ pub use types::*;
 pub use orchestration::{download_urls, enqueue_package_downloads, get_package_file_path};
 
 // Re-export manager functions and statics for public API
-pub use manager::{DOWNLOAD_MANAGER, submit_download_task, has_download_task, wait_for_any_download_task, cancel_downloads};
+pub use manager::{DOWNLOAD_MANAGER, submit_download_task, has_download_task, wait_for_any_download_task, cancel_downloads, finish_download_task_message};
 
 // Internal functions accessible within the crate
 pub(crate) use progress::setup_task_progress_tracking;
