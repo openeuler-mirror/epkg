@@ -1140,12 +1140,10 @@ pub fn is_executable(path: &Path) -> Result<bool> {
     Ok(executable)
 }
 
-/// Check if a file is executable, handling symlinks that may point to targets within environment root.
-/// Returns the resolved path if executable, or None if not.
-#[cfg(unix)]
 /// Check if a symlink targets a known multicall binary (coreutils, busybox, toybox).
 /// Multicall binaries use argv[0] to determine which subcommand to run,
 /// so symlinks to them should preserve the original path, not resolve to the target.
+#[cfg(unix)]
 fn is_symlink_to_multicall_binary(path: &Path) -> bool {
     if !lfs::is_symlink(path) {
         return false;
@@ -1158,6 +1156,7 @@ fn is_symlink_to_multicall_binary(path: &Path) -> bool {
     ["epkg", "coreutils", "busybox", "toybox"].contains(&target_name)
 }
 
+#[cfg(unix)]
 fn is_executable_within_env(path: &Path, env_root: &Path) -> Result<Option<PathBuf>> {
     trace!("is_executable_within_env checking: {}", path.display());
 
