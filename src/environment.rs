@@ -541,6 +541,51 @@ fn epkg_symlink_name(pkg_format: &PackageFormat) -> &'static str {
     crate::dirs::EPKG_USR_BIN_NAME
 }
 
+/// Create /usr/bin/init for VM execution.
+/// The kernel cmdline always specifies init=/usr/bin/init.
+/// Uses hardlink/copy from epkg symlink for virtiofs compatibility.
+fn create_init_for_vm(env_root: &Path) -> Result<()> {
+    let init_path = crate::dirs::path_join(env_root, &["usr", "bin", "init"]);
+    log::debug!("Creating init {} -> epkg (VM)", init_path.display());
+
+    // Remove existing file if present
+    if lfs::exists_no_follow(&init_path) {
+        lfs::remove_file(&init_path)?;
+    }
+
+    // Use hardlink/copy from epkg symlink (which must exist)
+    let epkg_source = crate::dirs::path_join(env_root, &["usr", "bin", "epkg"]);
+    if lfs::hard_link(&epkg_source, &init_path).is_err() {
+        log::debug!("Hardlink failed, falling back to copy");
+        lfs::copy(&epkg_source, &init_path)?;
+    }
+
+    // Set execute permission on init for virtiofs/Linux guest
+    // On Windows, virtiofs uses NTFS Extended Attributes ($LXMOD) to store POSIX mode.
+    #[cfg(windows)]
+    {
+        const S_IFREG: u32 = 0o100000;
+        const MODE_755: u32 = S_IFREG | 0o755;
+        if let Err(e) = crate::ntfs_ea::set_posix_mode(&init_path, MODE_755, false) {
+            log::warn!("Failed to set execute permission on {}: {}", init_path.display(), e);
+        } else {
+            log::debug!("Set execute permission (100755) on {}", init_path.display());
+        }
+    }
+
+    Ok(())
+}
+
+/// Check if package format needs VM execution (Deb/Rpm/Apk/Arch Linux)
+fn needs_vm_for_pkg_format(pkg_format: &PackageFormat) -> bool {
+    let needs_vm = matches!(pkg_format,
+        PackageFormat::Deb | PackageFormat::Rpm | PackageFormat::Apk
+    );
+    let is_arch_linux = *pkg_format == PackageFormat::Pacman &&
+        crate::models::channel_config().distro != "msys2";
+    needs_vm || is_arch_linux
+}
+
 /// Ensure \$env_root/usr/bin/epkg symlink exists and points to appropriate epkg binary.
 ///
 /// See the architecture documentation above for the dual-binary mechanism.
@@ -551,8 +596,6 @@ fn epkg_symlink_name(pkg_format: &PackageFormat) -> &'static str {
 /// - Returns Ok(()) even if self environment not found (no-op)
 /// - Logs debug messages for symlink creation
 pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Result<()> {
-    #[cfg(target_os = "linux")]
-    let _ = pkg_format;
 
     // Try to find appropriate epkg binary in self environment
     if let Some(self_env_root) = find_env_root(SELF_ENV) {
@@ -572,17 +615,10 @@ pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Resul
 
         // On Windows/macOS with Linux-format packages, use epkg-linux-$arch
         #[cfg(not(target_os = "linux"))]
-        {
-            let needs_vm = matches!(pkg_format,
-                PackageFormat::Deb | PackageFormat::Rpm | PackageFormat::Apk
-            );
-            let is_arch_linux = *pkg_format == PackageFormat::Pacman &&
-                crate::models::channel_config().distro != "msys2";
-
-            if needs_vm || is_arch_linux {
-                let arch = &crate::config().common.arch;
-                let self_epkg_linux = crate::dirs::path_join(&self_env_root, &["usr", "bin", &format!("epkg-linux-{}", arch)]);
-                if lfs::exists_in_env(&self_epkg_linux) {
+        if needs_vm_for_pkg_format(pkg_format) {
+            let arch = &crate::config().common.arch;
+            let self_epkg_linux = crate::dirs::path_join(&self_env_root, &["usr", "bin", &format!("epkg-linux-{}", arch)]);
+            if lfs::exists_in_env(&self_epkg_linux) {
                     // For VM-mode environments, copy/hardlink the binary instead of creating a symlink.
                     // This is necessary because:
                     // 1. The VM's rootfs is the environment directory (e.g., alpine/)
@@ -621,43 +657,12 @@ pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Resul
                     }
 
                     // Also create init for VM - kernel cmdline specifies init=/usr/bin/init
-                    // On Windows, use copy instead of symlink for virtiofs compatibility
-                    let init_path = crate::dirs::path_join(env_root, &["usr", "bin", "init"]);
-                    log::debug!("Creating init copy {} -> epkg (Linux VM)", init_path.display());
-                    // Remove existing file if present
-                    if lfs::exists_no_follow(&init_path) {
-                        lfs::remove_file(&init_path)?;
-                    }
-                    // Copy epkg to init (hardlink or copy)
-                    let epkg_source = crate::dirs::path_join(env_root, &["usr", "bin", "epkg"]);
-                    {
-                        // On Windows hosts, use hardlink/copy for virtiofs compatibility
-                        // Symlinks don't work well in virtiofs/VM environment
-                        let used_hardlink = lfs::hard_link(&epkg_source, &init_path).is_ok();
-                        if !used_hardlink {
-                            log::debug!("Hardlink failed, falling back to copy");
-                            lfs::copy(&epkg_source, &init_path)?;
-                        }
-
-                        // Set execute permission on init for virtiofs/Linux guest
-                        // On Windows, virtiofs uses NTFS Extended Attributes ($LXMOD) to store POSIX mode.
-                        #[cfg(windows)]
-                        {
-                            const S_IFREG: u32 = 0o100000;
-                            const MODE_755: u32 = S_IFREG | 0o755;
-                            if let Err(e) = crate::ntfs_ea::set_posix_mode(&init_path, MODE_755, false) {
-                                log::warn!("Failed to set execute permission on {}: {}", init_path.display(), e);
-                            } else {
-                                log::debug!("Set execute permission (100755) on {}", init_path.display());
-                            }
-                        }
-                    }
+                    create_init_for_vm(env_root)?;
 
                     return Ok(());
-                } else {
-                    log::debug!("epkg-linux-{} not found in self env, skipping epkg binary", arch);
-                    return Ok(());
-                }
+            } else {
+                log::debug!("epkg-linux-{} not found in self env, skipping epkg binary", arch);
+                return Ok(());
             }
         }
 
@@ -667,6 +672,13 @@ pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Resul
             log::debug!("Creating epkg symlink {} -> {} (native)", epkg_symlink.display(), self_epkg.display());
             force_symlink_file_for_native(&self_epkg, &epkg_symlink)
                 .with_context(|| format!("Failed to create epkg symlink in {}", epkg_symlink.display()))?;
+
+            // On Linux hosts, also create init for VM-needed package formats
+            // The kernel cmdline always specifies init=/usr/bin/init for VM execution
+            #[cfg(target_os = "linux")]
+            if needs_vm_for_pkg_format(pkg_format) {
+                create_init_for_vm(env_root)?;
+            }
         }
     }
     Ok(())
