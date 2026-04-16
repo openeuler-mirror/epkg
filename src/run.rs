@@ -778,6 +778,10 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
                     cmd_path.clone()
                 };
 
+                // Ensure forward slashes for Linux guest (Windows uses backslash)
+                let guest_cmd_path_str = guest_cmd_path.to_string_lossy().replace('\\', "/");
+                let guest_cmd_path = Path::new(&guest_cmd_path_str).to_path_buf();
+
                 crate::debug_epkg!("Guest command path: {}", guest_cmd_path.display());
 
                 // Use VMM backend selection that respects --vmm option
