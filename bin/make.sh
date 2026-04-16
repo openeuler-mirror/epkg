@@ -1919,7 +1919,7 @@ cross-macos() {
 
     # Always build Linux binary first - needed for VM mode deployment
     # Unconditional: code may have changed even if binary exists
-    build_static "$arch" debug
+    build_static "$arch" "$mode"
 
     local target=""
     case "$arch" in
@@ -1973,7 +1973,7 @@ cross-macos() {
 
     # Path to the locally built Linux ELF (epkg-linux-$arch) for macOS VM mode
     local linux_target=$(get_rust_target "$arch")
-    local linux_epkg="${PROJECT_ROOT}/target/${linux_target}/debug/${BINARY_NAME}"
+    local linux_epkg="${PROJECT_ROOT}/target/${linux_target}/${build_dir}/${BINARY_NAME}"
 
     # Deploy macOS binary to dist/
     if [[ "$mode" == "release" ]]; then
