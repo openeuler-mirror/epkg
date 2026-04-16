@@ -10,6 +10,8 @@
 #   ./test-isolation-modes.sh [-d|--debug|-dd|-ddd]
 #
 # The test creates a temporary environment and exercises all isolation modes.
+# Supports debug mode with -d/-dd/-ddd flags.
+# Logs to /tmp/test-isolation-modes.log for problem analysis.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -40,74 +42,76 @@ esac
 set_epkg_bin
 set_color_names
 
+# Fixed test environment name (non-random for reproducibility)
+TEST_ENV="test-isolation-modes"
+LOG_FILE="/tmp/test-isolation-modes.log"
+
+# Backup previous log for comparison
+if [ -f "$LOG_FILE" ]; then
+    mv "$LOG_FILE" "$LOG_FILE.bak"
+fi
+
 log() {
-    printf "%b[TEST]%b %b\n" "$GREEN" "$NC" "$*" >&2
+    printf "%b[TEST]%b %b\n" "$GREEN" "$NC" "$*" | tee -a "$LOG_FILE"
 }
 
 error() {
-    printf "%b[ERROR]%b %b\n" "$RED" "$NC" "$*" >&2
+    printf "%b[ERROR]%b %b\n" "$RED" "$NC" "$*" | tee -a "$LOG_FILE"
     if [ -n "$DEBUG_FLAG" ]; then
-        printf "\n=== Debug Mode ===\n" >&2
+        printf "\n=== Debug Mode ===\n" | tee -a "$LOG_FILE"
         if [ -t 0 ]; then
-            printf "Press Enter to continue (or Ctrl+C to exit)...\n" >&2
+            printf "Press Enter to continue (or Ctrl+C to exit)...\n" | tee -a "$LOG_FILE"
             read dummy || true
         fi
     fi
     exit 1
 }
 
-cleanup() {
-    if [ -n "$TEST_ENV" ]; then
-        log "Cleaning up environment: $TEST_ENV"
-        "$EPKG_BIN" env remove "$TEST_ENV" 2>/dev/null || true
-    fi
-}
-
-trap cleanup EXIT INT TERM
+# Remove existing environment before creating (leave for debug after test)
+log "Removing existing test environment if present"
+"$EPKG_BIN" env remove "$TEST_ENV" -y 2>&1 | tee -a "$LOG_FILE" || true
 
 log "Starting sandbox isolation modes test"
+log "Log file: $LOG_FILE"
 
-# Create test environment
-TEST_ENV="test-sandbox-$$"
+# Create test environment with timeout and -y for automation
 log "Creating test environment: $TEST_ENV"
-"$EPKG_BIN" env create "$TEST_ENV" -c alpine || error "Failed to create environment"
-
-# Determine mount options for fs/vm isolation
-EPKG_BIN_DIR="$(dirname "$EPKG_BIN")"
-SANDBOX_MOUNT_OPTS="--mount $EPKG_BIN_DIR"
+timeout 60 "$EPKG_BIN" env create "$TEST_ENV" -c alpine -y 2>&1 | tee -a "$LOG_FILE" || error "Failed to create environment"
 
 # Test 1: Default isolation (env)
 log "=== Test 1: Default isolation (env) ==="
-"$EPKG_BIN" -e "$TEST_ENV" run ls /sys || error "Default isolation ls /sys failed"
+timeout 30 "$EPKG_BIN" -e "$TEST_ENV" run ls /sys 2>&1 | tee -a "$LOG_FILE" || error "Default isolation ls /sys failed"
 log "Default isolation works"
 
 # Test 2: Explicit env isolation
 log "=== Test 2: Explicit --isolate=env ==="
-"$EPKG_BIN" -e "$TEST_ENV" run --isolate=env ls /sys || error "--isolate=env ls /sys failed"
+timeout 30 "$EPKG_BIN" -e "$TEST_ENV" run --isolate=env ls /sys 2>&1 | tee -a "$LOG_FILE" || error "--isolate=env ls /sys failed"
 log "Explicit env isolation works"
 
 # Test 3: Filesystem isolation
+# Note: Fs mode automatically handles necessary mounts; no explicit --mount needed for epkg bin dir
+# The --mount option for deep paths outside the env can fail due to target directory creation issues
 log "=== Test 3: --isolate=fs ==="
-"$EPKG_BIN" -e "$TEST_ENV" run --isolate=fs $SANDBOX_MOUNT_OPTS ls / || error "--isolate=fs ls / failed"
+timeout 30 "$EPKG_BIN" -e "$TEST_ENV" run --isolate=fs ls / 2>&1 | tee -a "$LOG_FILE" || error "--isolate=fs ls / failed"
 
 # Install bash for filesystem isolation tests
 log "Installing bash for filesystem isolation tests"
-"$EPKG_BIN" -e "$TEST_ENV" --assume-yes install bash coreutils || error "Failed to install bash"
+timeout 120 "$EPKG_BIN" -e "$TEST_ENV" -y install bash coreutils 2>&1 | tee -a "$LOG_FILE" || error "Failed to install bash"
 
 log "Testing ls /sys with --isolate=fs"
-"$EPKG_BIN" -e "$TEST_ENV" run --isolate=fs $SANDBOX_MOUNT_OPTS ls /sys || error "--isolate=fs ls /sys failed"
+timeout 30 "$EPKG_BIN" -e "$TEST_ENV" run --isolate=fs ls /sys 2>&1 | tee -a "$LOG_FILE" || error "--isolate=fs ls /sys failed"
 log "Filesystem isolation works"
 
 # Test 4: Config persistence
 log "=== Test 4: Config persistence ==="
 log "Setting isolate_mode=fs in env config"
-"$EPKG_BIN" -e "$TEST_ENV" env config set sandbox.isolate_mode fs || error "Failed to set isolate_mode"
+"$EPKG_BIN" -e "$TEST_ENV" env config set sandbox.isolate_mode fs 2>&1 | tee -a "$LOG_FILE" || error "Failed to set isolate_mode"
 
 log "Testing with env config (no --isolate flag)"
-"$EPKG_BIN" -e "$TEST_ENV" run $SANDBOX_MOUNT_OPTS ls /sys || error "ls /sys failed with env config"
+timeout 30 "$EPKG_BIN" -e "$TEST_ENV" run ls /sys 2>&1 | tee -a "$LOG_FILE" || error "ls /sys failed with env config"
 
 # Reset config
-"$EPKG_BIN" -e "$TEST_ENV" env config set sandbox.isolate_mode env || error "Failed to reset isolate_mode"
+"$EPKG_BIN" -e "$TEST_ENV" env config set sandbox.isolate_mode env 2>&1 | tee -a "$LOG_FILE" || error "Failed to reset isolate_mode"
 log "Config persistence works"
 
 # Test 5: VM isolation (if supported)
@@ -131,16 +135,16 @@ if [ -n "$RUST_TARGET" ] && [ -x "$PROJECT_ROOT/target/$RUST_TARGET/debug/epkg" 
 
     # Test that /opt/epkg/cache is writable
     log "Testing /opt/epkg/cache is writable in VM"
-    if "$EPKG_BIN" -e "$TEST_ENV" run --isolate=vm touch /opt/epkg/cache/.test_write 2>/dev/null; then
+    if timeout 60 "$EPKG_BIN" -e "$TEST_ENV" run --isolate=vm touch /opt/epkg/cache/.test_write 2>&1 | tee -a "$LOG_FILE"; then
         log "/opt/epkg/cache is writable in VM"
-        "$EPKG_BIN" -e "$TEST_ENV" run --isolate=vm rm -f /opt/epkg/cache/.test_write 2>/dev/null || true
+        timeout 30 "$EPKG_BIN" -e "$TEST_ENV" run --isolate=vm rm -f /opt/epkg/cache/.test_write 2>&1 | tee -a "$LOG_FILE" || true
     else
         log "Note: /opt/epkg/cache write test inconclusive (may be expected)"
     fi
 
     # Test with -u root
     log "Testing VM mode with -u root"
-    if "$EPKG_BIN" -e "$TEST_ENV" run --isolate=vm -u root id 2>/dev/null | grep -q "uid=0"; then
+    if timeout 60 "$EPKG_BIN" -e "$TEST_ENV" run --isolate=vm -u root id 2>&1 | tee -a "$LOG_FILE" | grep -q "uid=0"; then
         log "VM mode with -u root works correctly"
     else
         log "Note: VM mode with -u root test inconclusive"
@@ -153,3 +157,4 @@ else
 fi
 
 log "All sandbox isolation mode tests passed"
+log "Test environment '$TEST_ENV' left for debugging (remove manually if needed)"

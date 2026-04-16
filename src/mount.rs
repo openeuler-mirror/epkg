@@ -385,23 +385,31 @@ fn ensure_bind_target_exists(source: &PathBuf, target: &Path, isolate_mode: Isol
     // Ensure parent directory exists
     if let Some(parent) = target.parent() {
         if !lfs::exists_or_any_symlink(parent) {
-            let _ = lfs::create_dir_all(parent);
+            if let Err(e) = lfs::create_dir_all(parent) {
+                warn!("Failed to create parent directory for bind mount {}: {}. Continuing.", parent.display(), e);
+            }
         }
     }
 
     // Create appropriate placeholder
     if metadata.is_file() {
         trace!("Creating file placeholder for bind mount: {}", target.display());
-        let _ = lfs::file_create(target);
+        if let Err(e) = lfs::file_create(target) {
+            warn!("Failed to create file placeholder for bind mount {}: {}. Continuing.", target.display(), e);
+        }
     } else if metadata.is_dir() {
         trace!("Creating directory placeholder for bind mount: {}", target.display());
-        let _ = lfs::create_dir_all(target);
+        if let Err(e) = lfs::create_dir_all(target) {
+            warn!("Failed to create directory placeholder for bind mount {}: {}. Continuing.", target.display(), e);
+        }
     }
     // Other types (symlinks, device nodes, etc.) - create empty file as fallback
     // Device nodes cannot be created without mknod capability; empty file works as bind mount target
     else {
         trace!("Creating empty file placeholder for special file bind mount: {}", target.display());
-        let _ = lfs::file_create(target);
+        if let Err(e) = lfs::file_create(target) {
+            warn!("Failed to create placeholder for special file bind mount {}: {}. Continuing.", target.display(), e);
+        }
     }
 
     Ok(())
