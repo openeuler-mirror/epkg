@@ -48,8 +48,13 @@ fn finalize_windows_tar_symlinks(
         }
 
         if !is_dir {
-            let default_env_root = crate::dirs::get_default_env_root().ok();
-            let env = env_root_override.or(default_env_root.as_deref());
+            // Only check default env root if env_root_override is provided
+            // to avoid calling env_config() during early initialization (e.g., self install)
+            let env = if let Some(env) = env_root_override {
+                Some(env)
+            } else {
+                None
+            };
             if let Some(env) = env {
                 let env_target = if target_path.is_absolute() {
                     let relative = target_path.strip_prefix("/").unwrap_or(&target_path);
