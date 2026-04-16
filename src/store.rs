@@ -23,7 +23,7 @@ use log;
 
 /// Unpack a package file
 ///
-/// Unpacks a package from a file path and returns the actual package key and pkgline.
+/// Unpacks a package from a file path and returns the actual package key, pkgline, and store path.
 /// Does not link the package - linking must be done separately via link_package().
 ///
 pub fn unpack_package(
@@ -31,7 +31,7 @@ pub fn unpack_package(
     pkgkey: &str,
     store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
     format_hint: Option<PackageFormat>,
-) -> Result<(String, String)> {
+) -> Result<(String, String, std::path::PathBuf)> {
     // Unpack the package
     let final_dir = unpack_mv_package_with_format(file_path, Some(pkgkey), Some(store_pkglines_by_pkgname), format_hint)
         .with_context(|| format!("Failed to unpack package: {}", file_path))?;
@@ -48,7 +48,7 @@ pub fn unpack_package(
     // Format the package key using the exact architecture from the package
     let actual_pkgkey = package::format_pkgkey(&parsed.pkgname, &parsed.version, &parsed.arch);
 
-    Ok((actual_pkgkey, pkgline.to_string()))
+    Ok((actual_pkgkey, pkgline.to_string(), final_dir))
 }
 
 /// Unpacks multiple packages and moves them to the store

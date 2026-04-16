@@ -268,7 +268,7 @@ fn unpack_rpm_for_query(rpm_path: &str) -> Result<Package> {
             let store_pkglines_by_pkgname = HashMap::new();
             let dummy_pkgkey = ""; // pkgkey not needed for query unpacking
 
-            let (_actual_pkgkey, pkgline) = unpack_package(
+            let (_actual_pkgkey, pkgline, _store_path) = unpack_package(
                 rpm_path,
                 dummy_pkgkey,
                 &store_pkglines_by_pkgname,
