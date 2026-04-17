@@ -50,6 +50,11 @@ pub fn wait_guest_ready_unix(
 
     let listener_fd = listener.as_raw_fd();
     let start = Instant::now();
+    // Windows/WSL2 needs longer timeout due to slower virtiofs and potential large init binary
+    // With 195MB debug binary, guest takes ~217 seconds to boot. Allow 5 minutes.
+    #[cfg(windows)]
+    let total_timeout = Duration::from_secs(300);
+    #[cfg(not(windows))]
     let total_timeout = Duration::from_secs(30);
 
     loop {
@@ -296,6 +301,11 @@ pub fn wait_guest_ready_windows(
     });
 
     let start = std::time::Instant::now();
+    // Windows/WSL2 needs longer timeout due to slower virtiofs and potential large init binary
+    // With 195MB debug binary, guest takes ~217 seconds to boot. Allow 5 minutes.
+    #[cfg(windows)]
+    let timeout = Duration::from_secs(300);
+    #[cfg(not(windows))]
     let timeout = Duration::from_secs(30);
     // Use smaller poll interval for faster response
     let poll_interval = Duration::from_millis(10);
