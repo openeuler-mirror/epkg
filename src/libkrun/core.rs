@@ -1070,9 +1070,11 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, env_root: &Path, env_name
         check_status("krun_add_vsock", krun_add_vsock(ctx.ctx_id, tsi_features))?;
 
         // Port 10000: Command port
-        // Use listen=true so libkrun creates Unix socket listener.
-        // When host connects, libkrun sends OP_REQUEST to guest's vsock port 10000.
-        // Guest daemon (run_vsock_server) is listening on vsock port 10000.
+        // listen=true: libkrun creates Unix socket/named pipe listener.
+        //   When host connects, libkrun sends OP_REQUEST to guest's vsock port 10000.
+        //   Guest daemon (run_vsock_server) is listening on vsock port 10000.
+        // The guest ALWAYS listens on port 10000, so host must ALWAYS initiate.
+        // Therefore listen=true is required for both forward and reverse modes.
         let listen_10000 = true;
 
         #[cfg(unix)]
@@ -1117,8 +1119,8 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, env_root: &Path, env_name
             }
             log::debug!("libkrun: ready port 10001 mapped to {}", ready_path.display());
         }
-        log::debug!("libkrun: vsock port 10000 mapped to {} (listen=true, reverse={})",
-                   sock_path.display(), reverse);
+        log::debug!("libkrun: vsock port 10000 mapped to {} (listen={}, reverse={})",
+                   sock_path.display(), listen_10000, reverse);
     }
 
     Ok(sock_path)
