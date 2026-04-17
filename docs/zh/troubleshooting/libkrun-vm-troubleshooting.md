@@ -1,5 +1,47 @@
 # libkrun/VM 故障排查指南
 
+## First things first: 调试必备步骤
+
+### WSL2 环境变量传递
+
+在 WSL2 中运行 Windows 可执行文件 (epkg.exe) 时，需要通过 `WSLENV` 传递环境变量：
+
+```bash
+# WSLENV flags:
+# /w: 表示传递该变量到 Windows 进程
+# /p: Translates paths between WSL (Linux-style) and Windows (Win32-style).
+export WSLENV=EPKG_DEBUG_LIBKRUN/w:RUST_LOG/w:EPKG_VM_DEBUG/w
+export EPKG_DEBUG_LIBKRUN=1
+export EPKG_VM_DEBUG=1
+export RUST_LOG=debug
+./target/x86_64-pc-windows-gnu/debug/epkg.exe -e alpine run echo test
+```
+
+### Windows 交叉编译
+
+在 WSL2 中编译 Windows 版本 epkg.exe：
+
+```bash
+# 使用 make 命令进行交叉编译
+make cross-windows
+```
+
+### 内核日志分析
+
+VM 内核日志记录在 Windows 用户目录下：
+
+```bash
+# 查看最新内核日志
+tail /mnt/c/Users/aa/.epkg/cache/vmm-logs/latest-console.log
+```
+
+内核日志对调试 VM 启动问题至关重要，特别是：
+- init 进程崩溃 (segfault)
+- virtio 设备初始化失败
+- 文件系统挂载问题
+
+---
+
 ## 当前状态更新 (2026-03-31)
 
 ### 环境变量传递机制（重要理解）
@@ -146,8 +188,9 @@ C:\Users\aa\.epkg\envs\alpine\usr\bin\epkg.exe run --isolate=vm ls /
 rm -rf /mnt/c/Users/aa/.epkg/cache/vmm-logs/*.log
 
 # 设置环境变量传递（仅在启动时有效）
-export WSLENV=EPKG_DEBUG_LIBKRUN/p:RUST_LOG/p
+export WSLENV=EPKG_DEBUG_LIBKRUN/w:RUST_LOG/w:EPKG_VM_DEBUG/w
 export EPKG_DEBUG_LIBKRUN=1
+export EPKG_VM_DEBUG=1
 export RUST_LOG=debug
 
 # 启动 Windows epkg.exe（启动后 WSL2 不再相关）
@@ -308,10 +351,11 @@ export WSLENV=RUST_LOG:1:LIBKRUN_WINDOWS_VERBOSE_DEBUG:1
 **完整调试命令：**
 ```bash
 # 设置调试环境
-export WSLENV=RUST_LOG:1:LIBKRUN_WINDOWS_VERBOSE_DEBUG:1:EPKG_VM_DEBUG:1
+export WSLENV=RUST_LOG:EPKG_VM_DEBUG:LIBKRUN_WINDOWS_VERBOSE_DEBUG:EPKG_DEBUG_LIBKRUN
 export RUST_LOG=trace
 export LIBKRUN_WINDOWS_VERBOSE_DEBUG=1
 export EPKG_VM_DEBUG=1
+export EPKG_DEBUG_LIBKRUN=1
 
 # 运行测试
 /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command "
