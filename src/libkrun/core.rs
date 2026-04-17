@@ -1051,9 +1051,12 @@ fn setup_libkrun_vsock_host_sockets(ctx: &KrunContext, env_root: &Path, env_name
     let _ = std::fs::remove_file(&sock_path);
 
     // Ready path uses same naming pattern as setup_vsock_ready_listener (hash-based)
+    // Note: ready_path is NOT deleted here because:
+    // - On Unix: setup_vsock_ready_listener already created UnixListener and bound to it
+    // - On Windows: setup_vsock_ready_listener already created named pipe server
+    // - Deleting would break the existing listener/pipe, causing ready signal to fail
     let env_hash = crate::utils::hash_env_root(env_root);
     let ready_path = run_dir.join(format!("ready-{}.sock", env_hash));
-    let _ = std::fs::remove_file(&ready_path);
 
     unsafe {
         check_status("krun_disable_implicit_vsock", krun_disable_implicit_vsock(ctx.ctx_id))?;
@@ -2143,9 +2146,11 @@ pub fn run_command_in_krun(
         }
 
         crate::debug_epkg!("creating and configuring VM...");
-        let vm_ctx = create_and_configure_vm(env_root, run_options, &config)?;
-        crate::debug_epkg!("VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
 
+        // CRITICAL: Create ready pipe server BEFORE configuring VM!
+        // krun_add_vsock_port2_windows will pass the pipe name to libkrun.
+        // When guest connects to vsock 10001, libkrun will try to connect to this pipe.
+        // The pipe must already exist (CreateNamedPipe called) for this to work.
         // Use env_hash for ready listener (matches vsock socket naming)
         let env_hash = crate::utils::hash_env_root(env_root);
         #[cfg(unix)]
@@ -2155,7 +2160,10 @@ pub fn run_command_in_krun(
         let ready_pipe = super::bridge::setup_vsock_ready_listener(&env_hash)?
             .ok_or_else(|| eyre::eyre!("libkrun: missing ready listener"))?;
 
-        crate::debug_epkg!("vsock ready listener set up");
+        crate::debug_epkg!("vsock ready listener set up (before VM config)");
+
+        let vm_ctx = create_and_configure_vm(env_root, run_options, &config)?;
+        crate::debug_epkg!("VM configured (ctx_id={})", vm_ctx.ctx.ctx_id);
 
         let ctx_id = vm_ctx.ctx.ctx_id;
         let vsock_sock_path = vm_ctx
@@ -2168,20 +2176,49 @@ pub fn run_command_in_krun(
         crate::debug_epkg!("starting VM thread...");
         let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
 
-        crate::debug_epkg!("libkrun: waiting for guest to be ready (with timeout)...");
+        // On Windows, skip the ready notification mechanism - libkrun's vsock
+        // implementation doesn't properly handle guest-to-host connects (listen=false).
+        // The guest daemon continues to listen even if ready connect fails,
+        // so we just proceed to sending the command after a short delay.
         #[cfg(unix)]
-        let ready_result = super::bridge::wait_guest_ready_unix(&ready_listener, Some(&start_failed_rx));
-        #[cfg(windows)]
-        let ready_result = super::bridge::wait_guest_ready_windows(&ready_pipe, Some(&start_failed_rx));
+        {
+            crate::debug_epkg!("libkrun: waiting for guest to be ready (with timeout)...");
+            let ready_result = super::bridge::wait_guest_ready_unix(&ready_listener, Some(&start_failed_rx));
 
-        if let Err(e) = ready_result {
-            // VM startup failed - wait for VM thread to finish and clean up context
-            log::error!("libkrun: VM startup failed: {}", e);
-            let _ = unsafe { krun_signal_shutdown(ctx_id) };
-            let _ = vm_thread.join();
-            let _ = unsafe { krun_free_ctx(ctx_id) };
-            return Err(e);
+            if let Err(e) = ready_result {
+                // VM startup failed - wait for VM thread to finish and clean up context
+                log::error!("libkrun: VM startup failed: {}", e);
+                let _ = unsafe { krun_signal_shutdown(ctx_id) };
+                let _ = vm_thread.join();
+                let _ = unsafe { krun_free_ctx(ctx_id) };
+                return Err(e);
+            }
+            crate::debug_epkg!("libkrun: guest is ready");
         }
+        #[cfg(windows)]
+        {
+            // Windows workaround: try ready notification but don't fail if it times out
+            // The guest daemon handles ready connect failure and continues to listen anyway
+            crate::debug_epkg!("libkrun: attempting ready notification (best-effort on Windows)...");
+            let ready_result = super::bridge::wait_guest_ready_windows(&ready_pipe, Some(&start_failed_rx));
+            match ready_result {
+                Ok(_) => crate::debug_epkg!("libkrun: guest ready signal received"),
+                Err(e) => {
+                    log::warn!("libkrun: ready notification failed on Windows (non-fatal): {}. Proceeding to command...", e);
+                    // Check if VM failed to start
+                    if start_failed_rx.try_recv().is_ok() {
+                        log::error!("libkrun: VM failed to start");
+                        let _ = unsafe { krun_signal_shutdown(ctx_id) };
+                        let _ = vm_thread.join();
+                        let _ = unsafe { krun_free_ctx(ctx_id) };
+                        return Err(eyre::eyre!("VM failed to start (krun_start_enter error)"));
+                    }
+                    // Give guest daemon a moment to finish setup before sending command
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+        }
+
         crate::debug_epkg!("libkrun: guest is ready");
 
         // Register session IMMEDIATELY after Guest is ready (before sending command).

@@ -247,7 +247,11 @@ fn main() -> Result<()> {
         }
     }
 
-    setup_logging();
+    #[cfg(target_os = "linux")]
+    let invoked_as_init_for_logging = invoked_as_init;
+    #[cfg(not(target_os = "linux"))]
+    let invoked_as_init_for_logging = false;
+    setup_logging(invoked_as_init_for_logging);
 
     #[cfg(target_os = "linux")]
     if invoked_as_init {
@@ -305,6 +309,12 @@ fn main() -> Result<()> {
     log::debug!("argv[{}]: {:?}", argv.len(), argv);
 
     // Init CONFIG (and CLAP_MATCHES) for either applet or epkg main invocation
+    // Note: When invoked as VM guest init, applet detection is disabled.
+    // "init" is both a valid applet AND the VM guest init indicator.
+    // Init mode takes priority - we don't want to treat guest init as an applet.
+    #[cfg(target_os = "linux")]
+    let invoked_as_applet = if invoked_as_init { false } else { crate::busybox::is_invoked_as_applet() };
+    #[cfg(not(target_os = "linux"))]
     let invoked_as_applet = crate::busybox::is_invoked_as_applet();
 
     #[cfg(target_os = "linux")]
@@ -325,16 +335,13 @@ fn main() -> Result<()> {
     if invoked_as_init {
         use std::io::Write;
         if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
-            let _ = write!(kmsg, "<6>main: after init_config\n");
+            let _ = write!(kmsg, "<6>main: after init_config, calling init::run\n");
         }
-    }
-
-    #[cfg(target_os = "linux")]
-    if invoked_as_init {
-        use std::io::Write;
-        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
-            let _ = write!(kmsg, "<6>main: before attach_session_log\n");
-        }
+        // Skip ALL filesystem operations for init mode - virtiofs is too slow
+        // Directly call init::run() and return
+        use crate::busybox::init::run;
+        run(()).wrap_err("init: init::run failed")?;
+        return Ok(());
     }
 
     attach_session_log_under_epkg_cache();
@@ -391,22 +398,8 @@ fn main() -> Result<()> {
         }
     }
 
-    // If invoked as init (guest VMM mode), handle it BEFORE applet check.
-    // This is a workaround for Windows/WHPX where std::env::args_os() returns empty
-    // values when running as init, causing the applet check to fail.
-    #[cfg(target_os = "linux")]
-    if invoked_as_init {
-        use std::io::Write;
-        if let Ok(mut kmsg) = std::fs::OpenOptions::new().write(true).open("/dev/kmsg") {
-            let _ = write!(kmsg, "<6>main: running as init, bypassing applet check\n");
-        }
-        log::debug!("init: invoked as init, running init process");
-        use crate::busybox::init::run;
-        run(()).wrap_err("init: init::run failed")?;
-        return Ok(());
-    }
-
     // If invoked as an applet (via symlink/hardlink), handle it and return early
+    // Note: init mode is already handled earlier (after init_config) to skip filesystem ops
     if invoked_as_applet {
         match crate::busybox::handle_applet_invocation()? {
             Some(_) => return Ok(()), // Handled as applet, exit
@@ -461,18 +454,28 @@ use std::sync::Mutex;
 static LOG_FILE_WRITER: std::sync::OnceLock<Mutex<std::fs::File>> = std::sync::OnceLock::new();
 
 #[cfg(not(test))]
-fn setup_logging() {
+fn setup_logging(invoked_as_init: bool) {
     env_logger::Builder::from_default_env()
         .filter_module("ureq_proto", LevelFilter::Warn)
-        .format(|buf, record| {
+        .format(move |buf, record| {
             use std::io::Write;
 
-            let formatted = format!(
-                "[{} {} {}:{}] {}",
+            // When invoked as VM init, use UTC time to avoid filesystem timezone access
+            // which is extremely slow on virtiofs (can take 10+ seconds)
+            let timestamp = if invoked_as_init {
+                OffsetDateTime::now_utc().format(&format_description!(
+                    "[year]-[month]-[day] [hour repr:24]:[minute]:[second].[subsecond digits:3] UTC"
+                )).unwrap_or_else(|_| "<utc_time_err>".to_string())
+            } else {
                 match OffsetDateTime::now_local() {
                     Ok(dt) => dt.format(&format_description!("[year]-[month]-[day] [hour repr:24]:[minute]:[second].[subsecond digits:3] [offset_hour sign:mandatory][offset_minute]")).unwrap_or_else(|_| "<time_fmt_err>".to_string()),
                     Err(_) => "<local_time_err>".to_string(),
-                },
+                }
+            };
+
+            let formatted = format!(
+                "[{} {} {}:{}] {}",
+                timestamp,
                 record.level(),
                 record.file().unwrap_or("unknown"),
                 record.line().unwrap_or(0),
@@ -1351,9 +1354,26 @@ pub fn parse_cmdline() -> clap::ArgMatches {
 
 /// Parse command line from given args (used when running as applet so main parser is not run on applet argv).
 pub fn parse_cmdline_from(args: Vec<String>) -> clap::ArgMatches {
-    match build_epkg_command().try_get_matches_from(args.clone()) {
-        Ok(matches) => matches,
-        Err(e) => crate::utils::handle_clap_error_with_cmdline(e, args.join(" ")),
+    #[cfg(target_os = "linux")]
+    let _ = crate::busybox::init::kmsg_write("<6>parse_cmdline_from: started\n");
+    #[cfg(target_os = "linux")]
+    let _ = crate::busybox::init::kmsg_write("<6>parse_cmdline_from: calling build_epkg_command\n");
+    let cmd = build_epkg_command();
+    #[cfg(target_os = "linux")]
+    let _ = crate::busybox::init::kmsg_write("<6>parse_cmdline_from: build_epkg_command returned\n");
+    #[cfg(target_os = "linux")]
+    let _ = crate::busybox::init::kmsg_write("<6>parse_cmdline_from: calling try_get_matches_from\n");
+    match cmd.try_get_matches_from(args.clone()) {
+        Ok(matches) => {
+            #[cfg(target_os = "linux")]
+            let _ = crate::busybox::init::kmsg_write("<6>parse_cmdline_from: try_get_matches_from OK\n");
+            matches
+        },
+        Err(e) => {
+            #[cfg(target_os = "linux")]
+            let _ = crate::busybox::init::kmsg_write("<6>parse_cmdline_from: try_get_matches_from ERR\n");
+            crate::utils::handle_clap_error_with_cmdline(e, args.join(" "))
+        },
     }
 }
 

@@ -1397,13 +1397,46 @@ pub fn init_config(invoked_as_applet: bool, invoked_as_init: bool) -> Result<()>
     // When running as VM guest init, skip CLI parsing entirely.
     // The kernel cmdline contains VM parameters (epkg.vol_*, console=, etc.)
     // which are not valid epkg CLI arguments and would cause parse errors.
-    let matches = if invoked_as_init {
-        // Init mode: use minimal fake cmdline for config setup
-        // The actual config is derived from env.yaml in the guest environment
-        parse_cmdline_from(vec![
-            "epkg".to_string(),
-        ])
-    } else if invoked_as_applet {
+    // Also skip config file loading - the init process doesn't need config,
+    // it just mounts filesystems and runs vm_daemon. Config loading accesses
+    // filesystem (get_home, config file existence check) which is slow on virtiofs.
+    #[cfg(target_os = "linux")]
+    if invoked_as_init {
+        let _ = crate::busybox::init::kmsg_write("<6>init_config: invoked_as_init=true, skipping config load\n");
+    }
+
+    if invoked_as_init {
+        // Init mode: create minimal config with defaults, no filesystem access
+        // Skip clap parsing entirely - init mode doesn't need command parsing
+        #[cfg(target_os = "linux")]
+        let _ = crate::busybox::init::kmsg_write("<6>init_config: skipping clap parsing for init mode\n");
+        #[cfg(target_os = "linux")]
+        let _ = crate::busybox::init::kmsg_write("<6>init_config: parsing default config from YAML\n");
+        // Use empty YAML to create default config via serde defaults
+        let default_config: EPKGConfig = serde_yaml::from_str("{}")
+            .unwrap_or_else(|e| {
+                #[cfg(target_os = "linux")]
+                let _ = crate::busybox::init::kmsg_write(&format!("<3>init_config: YAML parse FAILED: {:?}\n", e));
+                panic!("Failed to create default config: {:?}", e)
+            });
+        #[cfg(target_os = "linux")]
+        let _ = crate::busybox::init::kmsg_write("<6>init_config: YAML parse OK\n");
+        // Create a dummy matches for init mode - we don't need real clap parsing
+        let matches = clap::ArgMatches::default();
+        #[cfg(target_os = "linux")]
+        let _ = crate::busybox::init::kmsg_write("<6>init_config: setting CLAP_MATCHES\n");
+        CLAP_MATCHES
+            .set(matches)
+            .map_err(|_| eyre::eyre!("init_config() must be called only once"))?;
+        #[cfg(target_os = "linux")]
+        let _ = crate::busybox::init::kmsg_write("<6>init_config: CLAP_MATCHES set, setting CONFIG\n");
+        *CONFIG.write().unwrap_or_else(|e| e.into_inner()) = Some(default_config);
+        #[cfg(target_os = "linux")]
+        let _ = crate::busybox::init::kmsg_write("<6>init_config: CONFIG set, returning Ok\n");
+        return Ok(());
+    }
+
+    let matches = if invoked_as_applet {
         parse_cmdline_from(vec![
             "epkg".to_string(),
             "busybox".to_string(),
