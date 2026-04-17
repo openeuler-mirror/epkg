@@ -1393,8 +1393,17 @@ pub fn clap_matches() -> &'static clap::ArgMatches {
 /// 4. `parse_options_subcommand` — subcommand parsing, env finalization, `init_config_dirs`.
 /// 5. Store the final `EPKGConfig` in `CONFIG` (merged path roots live in `crate::dirs::dirs_ref`, not in `config.dirs`).
 #[cfg(not(test))]
-pub fn init_config(invoked_as_applet: bool) -> Result<()> {
-    let matches = if invoked_as_applet {
+pub fn init_config(invoked_as_applet: bool, invoked_as_init: bool) -> Result<()> {
+    // When running as VM guest init, skip CLI parsing entirely.
+    // The kernel cmdline contains VM parameters (epkg.vol_*, console=, etc.)
+    // which are not valid epkg CLI arguments and would cause parse errors.
+    let matches = if invoked_as_init {
+        // Init mode: use minimal fake cmdline for config setup
+        // The actual config is derived from env.yaml in the guest environment
+        parse_cmdline_from(vec![
+            "epkg".to_string(),
+        ])
+    } else if invoked_as_applet {
         parse_cmdline_from(vec![
             "epkg".to_string(),
             "busybox".to_string(),

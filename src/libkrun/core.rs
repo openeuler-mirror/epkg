@@ -746,7 +746,19 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
         let tag = generate_virtiofs_tag(host_path);
         let guest = guest_path
             .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| path_str.clone());
+            .unwrap_or_else(|| {
+                // On Windows, convert host path to a valid Linux guest path.
+                // Windows paths like C:\Users\... or \\wsl.localhost\... are
+                // not valid Linux mount points.
+                #[cfg(target_os = "windows")]
+                {
+                    windows_path_to_linux_guest(&path_str)
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    path_str.clone()
+                }
+            });
         log::debug!("libkrun: adding virtiofs mount: {} -> {} (guest: {}) ({})",
                    host_path.display(), tag, guest, if read_only { "ro" } else { "rw" });
         mounts.push((tag, host_path.to_string_lossy().to_string(), guest, read_only));
@@ -938,6 +950,59 @@ fn parse_mount_spec_for_virtiofs(spec_str: &str, env_root: &Path) -> Option<(std
 /// Generate a unique virtiofs tag from a path.
 /// The tag is used as the mount point identifier in the guest.
 #[cfg(feature = "libkrun")]
+/// Convert a Windows path to a valid Linux guest path for virtiofs mounts.
+/// On Windows, host paths like C:\Users\... or \\wsl.localhost\... are not
+/// valid Linux mount points. This function converts them to usable Linux paths.
+///
+/// Examples:
+/// - \\wsl.localhost\Debian\home\wfg\epkg -> /home/wfg/epkg (extract Linux path from WSL UNC)
+/// - C:\Users\aa\.epkg -> /mnt/c/Users/aa/.epkg (convert drive letter to /mnt/X)
+/// - \\\\?\\C:\Users\... -> /mnt/c/Users/... (strip extended-length prefix)
+#[cfg(target_os = "windows")]
+fn windows_path_to_linux_guest(win_path: &str) -> String {
+    // Handle WSL2 UNC paths: \\wsl.localhost\Distro\linux_path
+    // Extract the Linux path portion after the distro name
+    if win_path.starts_with("\\\\wsl.localhost\\") || win_path.starts_with("\\\\wsl$\\") {
+        // For \\wsl.localhost\Distro\linux_path:
+        // splitn(5) on '\\' gives: ["", "", "wsl.localhost", "Distro", "linux_path"]
+        // parts[4] is the Linux path we want
+        let parts: Vec<&str> = win_path.splitn(5, '\\').collect();
+        if parts.len() >= 5 {
+            // parts[0] = "", parts[1] = "" (between \\), parts[2] = "wsl.localhost" or "wsl$"
+            // parts[3] = distro name, parts[4] = linux path
+            let linux_path = parts[4].replace('\\', "/");
+            return format!("/{}", linux_path);
+        }
+        // Fallback if split didn't work as expected
+        return win_path.replace('\\', "/");
+    }
+
+    // Handle extended-length path prefix: \\?\C:\...
+    let path_stripped = if win_path.starts_with("\\\\?\\") {
+        &win_path[4..]
+    } else {
+        win_path
+    };
+
+    // Handle drive letter paths: C:\Users\...
+    if path_stripped.len() >= 2 && path_stripped.chars().nth(1) == Some(':') {
+        let drive = path_stripped.chars().next().unwrap().to_ascii_lowercase();
+        let rest = &path_stripped[2..].replace('\\', "/");
+        // Strip leading '/' from rest if present to avoid double slash
+        let rest = rest.strip_prefix('/').unwrap_or(rest);
+        return format!("/mnt/{}/{}", drive, rest);
+    }
+
+    // Handle UNC paths without WSL prefix: \\server\share\...
+    if path_stripped.starts_with("\\\\") {
+        let rest = path_stripped[2..].replace('\\', "/");
+        return format!("/mnt/{}", rest);
+    }
+
+    // Fallback: just replace backslashes with forward slashes
+    win_path.replace('\\', "/")
+}
+
 fn generate_virtiofs_tag(path: &Path) -> String {
     // Use the last component of the path as the tag, or the full path if root
     let tag = path.file_name()

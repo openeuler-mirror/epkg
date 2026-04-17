@@ -315,7 +315,11 @@ fn main() -> Result<()> {
         }
     }
 
-    init_config(invoked_as_applet)?;
+    #[cfg(target_os = "linux")]
+    let invoked_as_init_for_config = invoked_as_init;
+    #[cfg(not(target_os = "linux"))]
+    let invoked_as_init_for_config = false;
+    init_config(invoked_as_applet, invoked_as_init_for_config)?;
 
     #[cfg(target_os = "linux")]
     if invoked_as_init {
