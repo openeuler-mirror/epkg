@@ -52,9 +52,10 @@ ensure_e2e_bare_env
 # Rootfs, rng, and vsock each use one IRQ. So we can only have ~8 additional mounts.
 # To stay under the limit, mount parent directories instead of multiple separate paths.
 #
-# Strategy: Mount ~/.cache/epkg as /opt/epkg/cache to cover both downloads and e2e-logs.
-# This reduces mount count while preserving functionality.
-MOUNTS="-m tmpfs:/opt/epkg"
+# Strategy: Mount ~/.epkg as /opt/epkg to provide envs and store in guest.
+# Then mount ~/.cache/epkg as /opt/epkg/cache for downloads and e2e-logs.
+# This ensures /opt/epkg/envs/ contains real environment configs.
+MOUNTS="-m $HOME/.epkg:/opt/epkg"
 MOUNTS="$MOUNTS -m tmpfs:/root"
 # Mount the entire epkg cache directory to cover downloads and e2e-logs
 EPKG_CACHE_DIR="${HOME}/.cache/epkg"
