@@ -739,6 +739,7 @@ pub fn powershell_profile_paths() -> Vec<PathBuf> {
 
 /// Get username from environment variables.
 /// On Unix, validates environment variables against real UID when running as setuid.
+/// EPKG_USER can override USER when running in VM guest (host username passthrough).
 pub fn get_username() -> Result<String> {
     // Security check: if running as setuid, get username from real UID and validate env vars
     #[cfg(unix)]
@@ -757,6 +758,15 @@ pub fn get_username() -> Result<String> {
         }
 
         return Ok(real_username);
+    }
+
+    // Try EPKG_USER first (for VM guest - host username passthrough)
+    // This allows VM guest running as root to use host's username for environment path alignment
+    if let Ok(username) = env::var("EPKG_USER") {
+        if !username.is_empty() {
+            log::debug!("get_username: using EPKG_USER='{}'", username);
+            return Ok(username);
+        }
     }
 
     // Try USER environment variable first (common on Unix/Linux) - only when not setuid

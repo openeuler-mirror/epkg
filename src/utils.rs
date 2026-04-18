@@ -466,14 +466,32 @@ pub(crate) fn should_mount_opt_epkg_readonly() -> bool {
 }
 
 /// Determine shared_store mode based on the decision sequence:
-/// 1. private if !is_running_as_root
-/// 2. public  if running as root and /opt/epkg/envs/ exists AND /opt/epkg/cache is writable
-/// 3. private if $HOME/.epkg/envs/ exists
-/// 4. public  if /opt/epkg/envs/ exists AND /opt/epkg/cache is writable
-/// 5. otherwise: neither envs exists, default to private (false)
+/// 1. EPKG_SHARED_STORE env var override (for VM guest alignment with host)
+/// 2. private if !is_running_as_root
+/// 3. public  if running as root and /opt/epkg/envs/ exists AND /opt/epkg/cache is writable
+/// 4. private if $HOME/.epkg/envs/ exists
+/// 5. public  if /opt/epkg/envs/ exists AND /opt/epkg/cache is writable
+/// 6. otherwise: neither envs exists, default to private (false)
 pub fn determine_shared_store() -> Result<bool> {
     use std::path::Path;
     use crate::dirs::get_home;
+
+    // Check EPKG_SHARED_STORE override first (for VM guest alignment with host layout)
+    if let Ok(shared_store_str) = std::env::var("EPKG_SHARED_STORE") {
+        match shared_store_str.to_lowercase().as_str() {
+            "true" | "1" | "shared" => {
+                log::debug!("determine_shared_store: EPKG_SHARED_STORE=true override -> shared");
+                return Ok(true);
+            }
+            "false" | "0" | "private" => {
+                log::debug!("determine_shared_store: EPKG_SHARED_STORE=false override -> private");
+                return Ok(false);
+            }
+            _ => {
+                log::warn!("determine_shared_store: invalid EPKG_SHARED_STORE value '{}', ignoring", shared_store_str);
+            }
+        }
+    }
 
     let is_root = is_running_as_root();
     let opt_envs = Path::new("/opt/epkg/envs");

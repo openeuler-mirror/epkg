@@ -726,6 +726,9 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
     let isolate_mode = prepared_opts.effective_sandbox.isolate_mode
         .unwrap_or(IsolateMode::Env);
 
+    debug!("fork_and_execute: env_root={}, isolate_mode={:?}, skip_namespace={}",
+           env_root.display(), isolate_mode, prepared_opts.skip_namespace_isolation);
+
     match isolate_mode {
         IsolateMode::Vm => {
             crate::debug_epkg!("fork_and_execute: starting for VM mode");
@@ -753,22 +756,29 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
 
                 // Add EPKG_ACTIVE_ENV and EPKG_ENV_ROOT for VM guest process
                 // This is critical for nested epkg calls to know the current environment
-                // In VM guest, ~/.epkg is mounted at /opt/epkg, so we need to convert paths
+                // In VM guest, the mount target depends on shared_store setting:
+                // - shared_store=true:  ~/.epkg mounted to /opt/epkg, so /opt/epkg/envs/NAME
+                // - shared_store=false: ~/.epkg mounted to /root/.epkg, so /root/.epkg/envs/NAME
                 let env_name = config().common.env_name.clone();
                 if !env_name.is_empty() {
                     prepared_opts.env_vars.insert("EPKG_ACTIVE_ENV".to_string(), env_name.clone());
-                    // Convert host env_root to guest path: ~/.epkg/envs/NAME -> /opt/epkg/envs/NAME
+                    // Convert host env_root to guest path based on shared_store
                     let home_epkg = crate::models::dirs().home_epkg.clone();
+                    let shared_store = config().init.shared_store;
                     let guest_env_root = if let Ok(stripped) = env_root.strip_prefix(&home_epkg) {
                         let s = stripped.to_string_lossy();
-                        let prefix = if s.starts_with('/') { "/opt/epkg" } else { "/opt/epkg/" };
+                        // Use guest mount target based on shared_store
+                        // shared_store=true: /opt/epkg (public layout)
+                        // shared_store=false: /root/.epkg (private layout, guest runs as root)
+                        let mount_target = if shared_store { "/opt/epkg" } else { "/root/.epkg" };
+                        let prefix = if s.starts_with('/') { mount_target } else { &format!("{}/", mount_target) };
                         format!("{}{}", prefix, s)
                     } else {
                         env_root.display().to_string()
                     };
                     prepared_opts.env_vars.insert("EPKG_ENV_ROOT".to_string(), guest_env_root.clone());
-                    debug!("Added EPKG_ACTIVE_ENV={} EPKG_ENV_ROOT={} (converted from {}) for VM execution",
-                           env_name, guest_env_root, env_root.display());
+                    debug!("Added EPKG_ACTIVE_ENV={} EPKG_ENV_ROOT={} (converted from {} for shared_store={}) for VM execution",
+                           env_name, guest_env_root, env_root.display(), shared_store);
                 }
 
                 // Convert host path to guest path (strip env_root prefix if inside)

@@ -45,23 +45,33 @@ ensure_e2e_bare_env() {
 
 ensure_e2e_bare_env
 
-# Guest: root + global epkg under tmpfs /opt/epkg; tmpfs /root for HOME.
+# Guest: root + epkg layout aligned with host via username passthrough.
 # Host download cache + optional log dir + resolv.conf for HTTPS/DNS.
 #
 # IMPORTANT: libkrun has limited IRQs (11 on x86_64). Each virtiofs mount needs one IRQ.
 # Rootfs, rng, and vsock each use one IRQ. So we can only have ~8 additional mounts.
 # To stay under the limit, mount parent directories instead of multiple separate paths.
 #
-# Strategy: Mount ~/.epkg as /opt/epkg to provide envs and store in guest.
-# Then mount ~/.cache/epkg as /opt/epkg/cache for downloads and e2e-logs.
-# This ensures /opt/epkg/envs/ contains real environment configs.
-MOUNTS="-m $HOME/.epkg:/opt/epkg"
-MOUNTS="$MOUNTS -m tmpfs:/root"
+# Strategy: Use private layout (EPKG_SHARED_STORE=false) to match host's non-root layout.
+# Mount host's ~/.epkg to /root/.epkg for user_envs (private: user_envs=$HOME/.epkg/envs).
+# EPKG_USER passes host username, so user_envs=$HOME/.epkg/envs=/root/.epkg/envs.
+# Self env is at user_envs/self=/root/.epkg/envs/self which exists via mount from host.
+# Store is at /root/.epkg/store for package symlinks (private layout uses $HOME/.epkg/store).
+#
+# Also mount store to original path (/opt/epkg/store) for cross-filesystem symlink resolution.
+# This follows libkrun's non-root-host + root-guest logic in build_virtiofs_mount_specs().
+#
+# Mount order: tmpfs first, then virtiofs.
+MOUNTS="-m tmpfs:/root"
+MOUNTS="$MOUNTS -m $HOME/.epkg:/root/.epkg"
+# Mount store to /opt/epkg/store for symlink resolution (different canonical path from ~/.epkg)
+MOUNTS="$MOUNTS -m $HOME/.epkg/store:/opt/epkg/store:ro"
 # Mount the entire epkg cache directory to cover downloads and e2e-logs
 EPKG_CACHE_DIR="${HOME}/.cache/epkg"
 mkdir -p "$EPKG_CACHE_DIR/downloads" "$EPKG_CACHE_DIR/e2e-logs"
-MOUNTS="$MOUNTS -m $EPKG_CACHE_DIR:/opt/epkg/cache"
-E2E_LOG_DIR=/opt/epkg/cache/e2e-logs  # Guest path (under the mounted cache)
+# Mount to /root/.cache for private layout (cache = $HOME/.cache/epkg)
+MOUNTS="$MOUNTS -m $EPKG_CACHE_DIR:/root/.cache"
+E2E_LOG_DIR=/root/.cache/e2e-logs  # Guest path (under the mounted cache)
 RESOLV_TMP="${TMPDIR:-/tmp}/epkg-e2e-resolv.$$"
 # Guest DNS: public resolvers first (work through QEMU NAT), then QEMU slirp (10.0.2.3) and host
 # upstreams from systemd. Slirp-only configs often return EAI_AGAIN on some hosts. Do not bind-mount host
@@ -120,6 +130,8 @@ set -- \
 	PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
 	HOME=/root \
 	USER=root \
+	EPKG_USER="$(whoami)" \
+	EPKG_SHARED_STORE=false \
 	E2E_DIR="$E2E_DIR" \
 	EPKG_BINARY="$EPKG_GUEST_BINARY" \
 	TEST_REL_PATH="$TEST_REL_PATH" \
