@@ -1466,8 +1466,30 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     #[cfg(target_os = "linux")]
     let _ = is_linux_format;
 
-    // When running directly inside env_root or with env_root=/, always bypass namespace isolation.
-    if config_guard.common.in_env_root || env_root.as_os_str() == "/" {
+    // When running directly inside env_root, skip namespace isolation ONLY if running
+    // from the SAME environment. If running from a DIFFERENT environment (-e other-env),
+    // namespace isolation is needed to switch to that environment's filesystem.
+    //
+    // in_env_root=true means we're inside an environment (VM guest or after namespace isolation).
+    // config().common.env_root is "/" (the namespace root) when inside an environment.
+    // env_root parameter is the target environment for this run command.
+    //
+    // Case 1: in_env_root=true, env_root="/" → running from current environment, skip namespace
+    // Case 2: in_env_root=true, env_root!=/  → running from different env, need namespace isolation
+    // Case 3: in_env_root=false, env_root="/" → running from root (unusual), skip namespace
+    if config_guard.common.in_env_root {
+        // We're inside an environment. Only skip namespace if running from the same environment.
+        if env_root.as_os_str() == "/" {
+            debug!("Running from current in_env_root environment, skipping namespace isolation");
+            run_options.skip_namespace_isolation = true;
+        } else {
+            // Running from a different environment, need namespace isolation to switch filesystem
+            debug!("Running from different environment (in_env_root=true, env_root={}), enabling namespace isolation",
+                   env_root.display());
+            // Explicitly enable namespace isolation (already set by default, but clarify intent)
+        }
+    } else if env_root.as_os_str() == "/" {
+        // Not inside an environment, but env_root="/" (unusual case)
         run_options.skip_namespace_isolation = true;
     }
 
