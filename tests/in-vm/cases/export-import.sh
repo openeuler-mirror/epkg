@@ -68,9 +68,15 @@ if ! epkg -e "$ENV2_NAME" run jq --version; then
     error "jq not found in env2"
 fi
 
-log "Verifying tree command in env2"
-if ! epkg -e "$ENV2_NAME" run tree --version; then
-    error "tree not found in env2"
+# Verify second package (tree on macOS, htop on Linux)
+log "Verifying $TEST_PKG2 command in env2"
+if [ "$(uname -s)" = "Darwin" ]; then
+    TEST_PKG2="tree"
+else
+    TEST_PKG2="htop"
+fi
+if ! epkg -e "$ENV2_NAME" run $TEST_PKG2 --version; then
+    error "$TEST_PKG2 not found in env2"
 fi
 
 log "Export/import test completed successfully"
