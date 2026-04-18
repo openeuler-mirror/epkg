@@ -1840,14 +1840,24 @@ fn determine_environment_explicit(matches: &clap::ArgMatches, config: &mut EPKGC
 /// - `epkg run -e myenv python` → explicit environment, this function not invoked
 /// Try to detect environment from /etc/epkg/env.yaml (when running inside an environment).
 /// Returns Ok(true) if environment detected and config updated, Ok(false) if file doesn't exist.
-fn try_detect_environment_from_env_yaml(config: &mut EPKGConfig) -> Result<bool> {
-    let root_env_yaml = env_root_env_yaml(Path::new("/"));
-    if !root_env_yaml.exists() {
+/// Only applicable on Linux (for VM guest execution); skipped on other platforms.
+fn try_detect_environment_from_env_yaml(_config: &mut EPKGConfig) -> Result<bool> {
+    // Only check /etc/epkg/env.yaml on Linux (VM guest execution)
+    // On Windows/macOS, this path doesn't exist and should not be checked
+    #[cfg(not(target_os = "linux"))]
+    {
         return Ok(false);
     }
-    apply_env_config_from_path(Path::new("/"), config)?;
-    log::debug!("env: from /etc/epkg/env.yaml -> {}", config.common.env_name);
-    Ok(true)
+    #[cfg(target_os = "linux")]
+    {
+        let root_env_yaml = env_root_env_yaml(Path::new("/"));
+        if !root_env_yaml.exists() {
+            return Ok(false);
+        }
+        apply_env_config_from_path(Path::new("/"), _config)?;
+        log::debug!("env: from /etc/epkg/env.yaml -> {}", _config.common.env_name);
+        Ok(true)
+    }
 }
 
 /// Handle explicit -r (env_root): load env config from path or set in_env_root for create.
