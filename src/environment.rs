@@ -666,19 +666,42 @@ pub fn create_epkg_symlink(env_root: &Path, pkg_format: &PackageFormat) -> Resul
             }
         }
 
-        // Default: use native epkg binary
+        // For VM-needed package formats on Linux hosts, use hardlink/copy instead of symlink.
+        // This is necessary because:
+        // 1. The VM's rootfs is the environment directory (e.g., alpine/)
+        // 2. Symlinks to paths outside the rootfs won't work in the VM guest
+        // 3. When $HOME/.epkg is a symlink, canonicalize resolves to paths like /tmp/epkg-aa/envs/self
+        //    which don't exist inside the VM
+        #[cfg(target_os = "linux")]
+        if needs_vm_for_pkg_format(pkg_format) {
+            let self_epkg = crate::dirs::path_join(&self_env_root, &["usr", "bin", crate::dirs::EPKG_USR_BIN_NAME]);
+            if lfs::exists_in_env(&self_epkg) {
+                log::debug!("Creating epkg binary for VM environment: {} from {}", epkg_symlink.display(), self_epkg.display());
+
+                // Remove existing file if present
+                if lfs::exists_no_follow(&epkg_symlink) {
+                    lfs::remove_file(&epkg_symlink)?;
+                }
+
+                // Try hardlink first (more efficient), fall back to copy
+                let used_hardlink = lfs::hard_link(&self_epkg, &epkg_symlink).is_ok();
+                if !used_hardlink {
+                    log::debug!("Hardlink failed, falling back to copy");
+                    lfs::copy(&self_epkg, &epkg_symlink)?;
+                }
+
+                // Also create init for VM - kernel cmdline specifies init=/usr/bin/init
+                create_init_for_vm(env_root)?;
+                return Ok(());
+            }
+        }
+
+        // Default: use native epkg binary (symlink for non-VM formats)
         let self_epkg = crate::dirs::path_join(&self_env_root, &["usr", "bin", crate::dirs::EPKG_USR_BIN_NAME]);
         if lfs::exists_in_env(&self_epkg) {
             log::debug!("Creating epkg symlink {} -> {} (native)", epkg_symlink.display(), self_epkg.display());
             force_symlink_file_for_native(&self_epkg, &epkg_symlink)
                 .with_context(|| format!("Failed to create epkg symlink in {}", epkg_symlink.display()))?;
-
-            // On Linux hosts, also create init for VM-needed package formats
-            // The kernel cmdline always specifies init=/usr/bin/init for VM execution
-            #[cfg(target_os = "linux")]
-            if needs_vm_for_pkg_format(pkg_format) {
-                create_init_for_vm(env_root)?;
-            }
         }
     }
     Ok(())
