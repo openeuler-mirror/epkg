@@ -1696,6 +1696,20 @@ fn infer_channel_from_env_name(env_name: &str) -> Option<String> {
 /// Set in_env_root only when loading from "/" (we're inside the env); when loading from -r PATH
 /// we're on the host selecting that env, so run must still do namespace/mounts (same as -e).
 fn apply_env_config_from_path(env_root_or_etc: &Path, config: &mut EPKGConfig) -> Result<()> {
+    // CRITICAL: Never read /etc/epkg/env.yaml on non-Linux platforms
+    // This path only exists in Linux VM guest, not on Windows/macOS host.
+    // The cfg(target_os="linux") guard on callers should prevent this,
+    // but add runtime check as safety net.
+    if env_root_or_etc == Path::new("/") && std::env::consts::OS != "linux" {
+        log::debug!("apply_env_config_from_path: skipping '/' path on {} (runtime guard)", std::env::consts::OS);
+        return Err(eyre::eyre!(
+            "Cannot read /etc/epkg/env.yaml on {} platform. \
+             This indicates a bug in environment detection logic. \
+             On Windows/macOS, use -e <env_name> or -r <path> to select environment.",
+            std::env::consts::OS
+        ));
+    }
+
     let config_path = if env_root_or_etc == Path::new("/") {
         env_root_env_yaml(Path::new("/"))
     } else {
@@ -1844,10 +1858,20 @@ fn determine_environment_explicit(matches: &clap::ArgMatches, config: &mut EPKGC
 fn try_detect_environment_from_env_yaml(_config: &mut EPKGConfig) -> Result<bool> {
     // Only check /etc/epkg/env.yaml on Linux (VM guest execution)
     // On Windows/macOS, this path doesn't exist and should not be checked
+    //
+    // Use BOTH cfg guard AND runtime check for safety:
+    // - cfg guard: compile-time optimization, removes code from non-Linux binaries
+    // - runtime check: fallback protection in case of unexpected code paths
     #[cfg(not(target_os = "linux"))]
     {
-        return Ok(false);
+        // Runtime double-check: ensure we're actually on Linux before reading /etc/epkg/env.yaml
+        // This catches any edge cases where the code might be called unexpectedly
+        if std::env::consts::OS != "linux" {
+            log::debug!("try_detect_environment_from_env_yaml: skipping, not on Linux (runtime check)");
+            return Ok(false);
+        }
     }
+
     #[cfg(target_os = "linux")]
     {
         let root_env_yaml = env_root_env_yaml(Path::new("/"));
@@ -1857,6 +1881,10 @@ fn try_detect_environment_from_env_yaml(_config: &mut EPKGConfig) -> Result<bool
         apply_env_config_from_path(Path::new("/"), _config)?;
         log::debug!("env: from /etc/epkg/env.yaml -> {}", _config.common.env_name);
         Ok(true)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(false)
     }
 }
 
@@ -2011,9 +2039,17 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
     if try_apply_explicit_env_root(config)? {
         return Ok(());
     }
-    // Check /etc/epkg/env.yaml FIRST for VM guest execution.
-    // In VM mode, rootfs = env_root, so /etc/epkg/env.yaml is the authoritative source.
-    // This eliminates the need for EPKG_ACTIVE_ENV/EPKG_ENV_ROOT env vars.
+
+    // IMPORTANT: Check EPKG_ACTIVE_ENV/EPKG_ENV_ROOT BEFORE /etc/epkg/env.yaml
+    // On Windows VM guest, virtiofs might not be ready immediately, causing /etc/epkg/env.yaml read to fail.
+    // EPKG env vars are passed from host and are always available.
+    // On Linux VM guest, we still prefer /etc/epkg/env.yaml when available (virtiofs is ready).
+    // This order ensures VM guest can reliably detect environment from host-passed env vars.
+    if try_env_from_epkg_activenv(config) {
+        return Ok(());
+    }
+
+    // Check /etc/epkg/env.yaml for VM guest execution (virtiofs root = env_root)
     // Skip if -e was explicit with a DIFFERENT env_name (user wants different env).
     if !config.common.env_name_explicit || config.common.env_name.is_empty() {
         if try_detect_environment_from_env_yaml(config)? {
@@ -2030,11 +2066,8 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
         );
         return Ok(());
     }
-    // EPKG_ACTIVE_ENV as fallback for backwards compatibility.
-    // Prefer /etc/epkg/env.yaml over env vars for cleaner design.
-    if try_env_from_epkg_activenv(config) {
-        return Ok(());
-    }
+    // try_env_from_epkg_activenv was already called earlier (before /etc/epkg/env.yaml check)
+    // to prioritize host-passed env vars over virtiofs which might not be ready.
     if !config.common.env_name.is_empty() {
         log::debug!("env: using existing env_name -> {}", config.common.env_name);
         return Ok(());
@@ -2529,6 +2562,9 @@ fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
         Some(("upgrade", sm)) => ("upgrade", sm),
         Some(("remove", sm)) => ("remove", sm),
         Some(("restore", sm)) => ("restore", sm),
+        #[cfg(not(target_os = "linux"))]
+        _ => return Ok(None), // Not a command that needs VM routing on Windows
+        #[cfg(target_os = "linux")]
         _ => return Ok(None), // Not a command that needs VM routing
     };
 
