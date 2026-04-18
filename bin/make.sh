@@ -720,14 +720,23 @@ update_all_env_hardlinks() {
 
         for filename in $filenames; do
             local target_path="$env_usr_bin/$filename"
+            # Update existing files, or create epkg if init exists
+            local should_update=false
             if [[ -f "$target_path" ]]; then
+                should_update=true
+            elif [[ "$filename" == "epkg" && -f "$env_usr_bin/init" ]]; then
+                # Create missing epkg when init exists (Linux distro environment)
+                should_update=true
+                echo "[SYNC-create] $target_path (missing epkg, init exists)"
+            fi
+            if [[ "$should_update" == "true" ]]; then
                 # Check if already hardlinked to the correct inode
-                if [[ "$target_path" -ef "$self_epkg_linux" ]]; then
+                if [[ -f "$target_path" ]] && [[ "$target_path" -ef "$self_epkg_linux" ]]; then
                     continue
                 fi
 
-                # Remove existing file and create new hardlink
-                rm -f "$target_path" || continue
+                # Remove existing file (if any) and create new hardlink
+                rm -f "$target_path" 2>/dev/null || true
                 if ln "$self_epkg_linux" "$target_path" 2>/dev/null; then
                     updated_count=$((updated_count + 1))
                     echo "[SYNC-hardlink] $target_path"
@@ -761,23 +770,33 @@ update_all_env_hardlinks() {
 
                 for filename in epkg init; do
                     local target_path="$env_usr_bin/$filename"
+                    # Update existing files, or create epkg if init exists
+                    local should_update=false
                     if [[ -f "$target_path" ]]; then
+                        should_update=true
+                    elif [[ "$filename" == "epkg" && -f "$env_usr_bin/init" ]]; then
+                        # Create missing epkg when init exists (Linux distro environment)
+                        should_update=true
+                        echo "[SYNC-create] $target_path (missing epkg, init exists)"
+                    fi
+                    if [[ "$should_update" == "true" ]]; then
                         # Fast check: compare file sizes first (avoids slow cmp across filesystems)
                         local src_size target_size
                         src_size=$(stat -c%s "$self_epkg_linux" 2>/dev/null) || continue
-                        target_size=$(stat -c%s "$target_path" 2>/dev/null) || continue
-                        if [[ "$src_size" == "$target_size" ]]; then
-                            # Sizes match, check mtime as secondary filter
-                            local src_mtime target_mtime
-                            src_mtime=$(stat -c%Y "$self_epkg_linux" 2>/dev/null) || continue
-                            target_mtime=$(stat -c%Y "$target_path" 2>/dev/null) || continue
-                            if [[ "$src_mtime" -le "$target_mtime" ]]; then
-                                # Source is not newer and same size, skip
-                                continue
+                        if [[ -f "$target_path" ]]; then
+                            target_size=$(stat -c%s "$target_path" 2>/dev/null) || continue
+                            if [[ "$src_size" == "$target_size" ]]; then
+                                # Sizes match, check mtime as secondary filter
+                                local src_mtime target_mtime
+                                src_mtime=$(stat -c%Y "$self_epkg_linux" 2>/dev/null) || continue
+                                target_mtime=$(stat -c%Y "$target_path" 2>/dev/null) || continue
+                                if [[ "$src_mtime" -le "$target_mtime" ]]; then
+                                    # Source is not newer and same size, skip
+                                    continue
+                                fi
                             fi
+                            rm -f "$target_path"
                         fi
-
-                        rm -f "$target_path"
 
                         # Try hardlink first if we have a Windows-side source
                         if [[ -n "$win_source_file" ]]; then
