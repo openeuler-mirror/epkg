@@ -903,8 +903,14 @@ fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<
     // Set up environment variables
     let mut env_vars = run_options.env_vars.clone();
 
-    let ch = crate::models::channel_config();
-    let channel_format = ch.format;
+    // Load channel config from the target env_root, not global static
+    // This is critical after namespace isolation where global paths may not exist
+    let channel_configs = crate::io::deserialize_channel_config_from_root(&env_root.to_path_buf())
+        .unwrap_or_default();
+    let ch = channel_configs.first();
+    let channel_format = ch.map(|c| c.format).unwrap_or(crate::models::PackageFormat::Apk);
+    #[cfg(windows)]
+    let distro = ch.map(|c| c.distro.clone()).unwrap_or_default();
 
     if channel_format == crate::models::PackageFormat::Conda {
         env_vars.insert("CONDA_PREFIX".to_string(), env_root.display().to_string());
@@ -914,7 +920,7 @@ fn fork_and_execute_direct(env_root: &Path, run_options: &RunOptions) -> Result<
     }
 
     #[cfg(windows)]
-    if channel_format == crate::models::PackageFormat::Pacman && ch.distro == "msys2" {
+    if channel_format == crate::models::PackageFormat::Pacman && distro == "msys2" {
         env_vars.insert("PATH".to_string(), msys2_pacman_path_env(env_root));
     }
 
@@ -1284,11 +1290,19 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
     Err(eyre::eyre!("Command '{}' not found in environment PATH under {}", cmd_name, env_root.display()))
 }
 
-/// Check if current environment is a brew environment
-/// Uses global channel_config().format for O(1) access instead of deserializing
+/// Check if the environment at env_root is a brew environment
+/// Loads channel config from env_root instead of using global cached config,
+/// because after namespace isolation the global config may reference paths
+/// that don't exist in the new root filesystem.
 #[cfg(unix)]
-pub fn is_brew_environment(_env_root: &Path) -> bool {
-    crate::models::channel_config().format == crate::models::PackageFormat::Brew
+pub fn is_brew_environment(env_root: &Path) -> bool {
+    // Load channel config from the specific env_root, not the global static
+    // This is critical after namespace isolation where global paths may not exist
+    let channel_configs = crate::io::deserialize_channel_config_from_root(&env_root.to_path_buf())
+        .unwrap_or_default();
+    channel_configs.first()
+        .map(|c| c.format == crate::models::PackageFormat::Brew)
+        .unwrap_or(false)
 }
 
 /// Check if the host OS uses traditional directory layout (dirs) or usr-merge layout (symlinks).

@@ -285,12 +285,15 @@ pub fn unpack_basedir() -> PathBuf {
 pub fn get_env_root(env_name: String) -> Result<PathBuf> {
     let current_env = config().common.env_name.clone();
     // Only use the cached env config if we're asking for the current environment
+    // AND env_root is already set (e.g., from --root flag or main.rs initialization)
     if !current_env.is_empty() && current_env == env_name {
         let current_env_root = config().common.env_root.clone();
         if !current_env_root.is_empty() {
             Ok(current_env_root.into())
         } else {
-            let env_config = env_config();
+            // env_name matches but env_root not set - load from env_name
+            // This handles -e flag where only env_name was set
+            let env_config = crate::io::deserialize_env_config_for(env_name)?;
             Ok(PathBuf::from(&env_config.env_root))
         }
     } else {
@@ -312,6 +315,28 @@ pub fn get_default_generations_root() -> Result<PathBuf> {
     get_generations_root(&config().common.env_name)
 }
 
+/// Decode an auto-generated environment name back to its filesystem path.
+/// Auto-generated names start with '__' and encode the path by replacing '/' with '__'.
+/// For example: `__root__.epkg__tmp__myenv` -> `/root/.epkg/tmp/myenv`
+/// Returns None if the name is not an auto-generated path-encoded name.
+fn env_path_from_name(env_name: &str) -> Option<PathBuf> {
+    // Auto-generated names must start with '__'
+    if !env_name.starts_with("__") {
+        return None;
+    }
+
+    // Check if this looks like a path-encoded name (contains '__' after the initial '__')
+    // Names like "__main" are special, not path-encoded
+    let after_prefix = &env_name[2..];
+    if !after_prefix.contains("__") {
+        return None;
+    }
+
+    // Decode: replace '__' with '/' and add leading '/'
+    let decoded = format!("/{}", after_prefix.replace("__", "/"));
+    Some(PathBuf::from(decoded))
+}
+
 /// Get the base path for an environment
 /// Location is determined by InitOptions.shared_store:
 ///   - shared_store=false: $HOME/.epkg/envs/$env_name
@@ -319,11 +344,18 @@ pub fn get_default_generations_root() -> Result<PathBuf> {
 ///     - self:   /opt/epkg/envs/root/self (special env for package manager files only)
 ///     - others: /opt/epkg/envs/$USER/$env_name
 /// Supports both 'env_name' and 'owner/env_name' formats
+/// Special handling for path-encoded names like '__root__.epkg__tmp__myenv'
 /// Note: EnvConfig.public only controls visibility/permissions, not location
 pub fn get_env_base_path(env_name: &str) -> PathBuf {
     if env_name.is_empty() {
         panic!("env_name is empty in get_env_base_path");
     }
+
+    // Check if this is a path-encoded name (auto-generated from --root)
+    if let Some(path) = env_path_from_name(env_name) {
+        return path;
+    }
+
     // Visit other's /opt/epkg/envs/$owner/$name (public envs)
     if let Some(slash_pos) = env_name.find('/') {
         if !matches!(config().subcommand,
