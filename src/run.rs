@@ -762,7 +762,8 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
                 // - EPKG_ACTIVE_ENV if user set it
                 // - MAIN_ENV fallback
 
-                // Pass EPKG_USER and EPKG_HOME for path consistency
+                // Pass EPKG_USER, EPKG_HOME, EPKG_SHARED_STORE for path consistency
+                // These are internal helpers set by Rust (not user requirements)
                 // Guest will compute host-style paths using these
                 #[cfg(unix)]
                 let host_user = crate::dirs::get_username().unwrap_or_else(|_| "root".to_string());
@@ -778,9 +779,14 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
                 #[cfg(windows)]
                 let host_home = std::env::var("USERPROFILE").unwrap_or_else(|_| format!("C:\\Users\\{}", host_user));
                 #[cfg(unix)]
-                prepared_opts.env_vars.insert("EPKG_HOME".to_string(), host_home.clone());
-                #[cfg(unix)]
-                debug!("Added EPKG_USER={} EPKG_HOME={} for VM path consistency", host_user, host_home);
+                {
+                    prepared_opts.env_vars.insert("EPKG_HOME".to_string(), host_home.clone());
+                    // Pass shared_store setting for guest layout alignment
+                    let shared_store = config().init.shared_store;
+                    prepared_opts.env_vars.insert("EPKG_SHARED_STORE".to_string(), shared_store.to_string());
+                    debug!("Added EPKG_USER={} EPKG_HOME={} EPKG_SHARED_STORE={} for VM path consistency",
+                           host_user, host_home, shared_store);
+                }
 
                 // Convert host path to guest path (strip env_root prefix if inside)
                 // With path-consistency mount, paths are the same - no conversion needed
