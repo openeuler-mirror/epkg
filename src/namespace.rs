@@ -979,7 +979,7 @@ fn fs_mount_spec_strings(env_root: &Path, is_brew_env: bool) -> Vec<String> {
     specs
 }
 
-fn vm_mount_spec_strings() -> Vec<String> {
+pub fn vm_mount_spec_strings() -> Vec<String> {
     let mut spec_strings = Vec::new();
 
     // Always make mounts private to prevent mount leaks to parent namespace.
@@ -997,6 +997,26 @@ fn vm_mount_spec_strings() -> Vec<String> {
     // Auto-mount Windows drives from /mnt (like WSL2) when running on Windows
     spec_strings.extend(windows_drive_mount_specs());
 
+    spec_strings
+}
+
+/// Bind mount spec strings for VM mode (including make-rprivate).
+/// Used by QEMU/libkrun to bind mount home_epkg/home_cache/opt_epkg into env_root
+/// before starting virtiofsd, so VM guest can access them via single virtiofs.
+/// make-rprivate prevents bind mounts from leaking to parent mount namespace.
+///
+/// NOTE: This requires CAP_SYS_ADMIN capability for mount operations.
+/// When running in sandbox without this capability, these mounts will fail.
+#[allow(dead_code)]
+pub fn vm_bind_mount_spec_strings() -> Vec<String> {
+    let mut spec_strings = Vec::new();
+    // Make mounts private to prevent leaks to parent namespace
+    spec_strings.push("make-rprivate://".to_string());
+    add_epkg_mount_spec_strings(&mut spec_strings);
+    // Mount host /lib/modules read-only for kernel module loading (e.g., virtio_net)
+    if std::path::Path::new("/lib/modules").exists() {
+        spec_strings.push("/lib/modules:ro,try".to_string());
+    }
     spec_strings
 }
 

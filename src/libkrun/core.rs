@@ -699,6 +699,10 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
     use std::fs;
     use crate::models::dirs;
 
+    // TODO: On Linux, bind mounts should be performed before VM start,
+    // then single virtiofs sharing env_root suffices.
+    // Currently we use multiple virtiofs mounts on all platforms.
+
     let mut mounts = Vec::new();
     // Track canonicalized paths to avoid duplicate mounts on same filesystem location
     let mut seen_canonical: Vec<std::path::PathBuf> = Vec::new();
@@ -2120,6 +2124,17 @@ pub fn run_command_in_krun(
 ) -> Result<()> {
     crate::debug_epkg!("START run_command_in_krun");
     crate::run::ensure_linux_kvm_ready_for_vm()?;
+
+    // TODO: On Linux, perform bind mounts before VM start (requires CAP_SYS_ADMIN)
+    // This ensures home_epkg/home_cache/opt_epkg are available inside env_root
+    // which is then shared with VM guest via single virtiofs (no extra mounts needed)
+    // #[cfg(target_os = "linux")]
+    // {
+    //     use crate::models::IsolateMode;
+    //     let spec_strings = crate::namespace::vm_bind_mount_spec_strings();
+    //     ...
+    // }
+
     crate::debug_epkg!("building config...");
     let config = build_libkrun_config(env_root, run_options, guest_cmd_path)?;
     crate::debug_epkg!("config built, use_vsock={}", config.use_vsock);

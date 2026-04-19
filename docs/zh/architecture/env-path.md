@@ -326,3 +326,58 @@ epkg install jq                 # 安装到 myenv
 ## 待完善项
 
 1. **更多测试脚本适配 EPKG_HOME**
+
+## VM 模式 Mounts 统一方案
+
+### 问题
+
+不同 VMM backend 的 virtiofs mounts 方案不一致：
+- QEMU: 只共享 env_root，VM 内看不到 host 的 home_epkg/home_cache/opt_epkg
+- libkrun: 添加额外的 virtiofs mounts，但需要为每个目录启动独立的 virtiofs device
+
+### 统一方案
+
+**Linux (QEMU + libkrun)**：
+- 使用 bind mounts 将 home_epkg/home_cache/opt_epkg 挂载到 env_root 内对应路径
+- 然后启动单个 virtiofs 共享 env_root
+- VM guest 自然能看到这些目录
+- 需要 CAP_SYS_ADMIN capability 执行 bind mounts
+
+**macOS/Windows (libkrun)**：
+- 不支持 bind mounts
+- 使用多个 virtiofs mounts（每个目录一个）
+- 通过 kernel cmdline `epkg.vol_N=tag:guest_path[:ro]` 配置
+- guest init 在启动时挂载这些 volumes
+
+### 实现位置
+
+| 函数 | 文件 | 说明 |
+|------|------|------|
+| `vm_bind_mount_spec_strings()` | src/namespace.rs | 生成 bind mount spec strings |
+| `setup_qemu_vm()` | src/qemu.rs | TODO: 调用 bind mounts |
+| `run_command_in_krun()` | src/libkrun/core.rs | TODO: Linux 上调用 bind mounts |
+| `build_virtiofs_mount_specs()` | src/libkrun/core.rs | macOS/Windows 生成多个 virtiofs mounts |
+| `mount_virtiofs_volumes()` | src/busybox/init.rs | guest init 挂载 virtiofs volumes |
+
+### 路径转换
+
+当 host 命令路径（如 `/home/wfg/.epkg/envs/myenv/usr/bin/env`）发送给 VM guest 时，需要转换为 guest 内路径（`/usr/bin/env`）：
+
+| 函数 | 文件 | 说明 |
+|------|------|------|
+| `convert_host_path_to_guest_path()` | src/namespace.rs | namespace 路径的路径转换 |
+| `run.rs:791-804` | src/run.rs | VM 直接调用时的路径转换 |
+
+转换逻辑：
+```rust
+let guest_cmd_path = cmd_path.strip_prefix(env_root)
+    .map(|rel| PathBuf::from(format!("/{}", rel)))
+    .unwrap_or_else(|_| cmd_path.clone());
+```
+
+### virtiofs 挂载机制
+
+virtiofs 将 env_root 挂载为 VM 根目录 `/`：
+- Host: `/home/wfg/.epkg/envs/myenv`
+- Guest: `/` (virtiofs mount point)
+- 路径映射: `/home/wfg/.epkg/envs/myenv/usr/bin/env` → `/usr/bin/env`

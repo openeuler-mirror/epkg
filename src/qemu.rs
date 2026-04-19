@@ -882,6 +882,14 @@ fn setup_qemu_vm(
     let (kernel, initrd, qemu_bin, virtiofsd_bin, extra_qemu_args) = parse_vmm_config(run_options)?;
     let (qemu_log_path, virtiofsd_log_path) = setup_vmm_logs()?;
 
+    // TODO: Setup bind mounts before starting virtiofsd (requires CAP_SYS_ADMIN)
+    // This ensures home_epkg/home_cache/opt_epkg are available inside env_root
+    // which is then shared with VM guest via single virtiofs
+    // let spec_strings = crate::namespace::vm_bind_mount_spec_strings();
+    // let spec_refs: Vec<&str> = spec_strings.iter().map(|s| s.as_str()).collect();
+    // let mounts = crate::mount::parse_mount_specs(&spec_refs);
+    // crate::mount::mount_batch_specs(&mounts, env_root, IsolateMode::Vm)?;
+
     let host_uid = users::get_current_uid();
     let host_gid = users::get_current_gid();
 
