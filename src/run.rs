@@ -789,8 +789,19 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
                 }
 
                 // Convert host path to guest path (strip env_root prefix if inside)
-                // With path-consistency mount, paths are the same - no conversion needed
-                let guest_cmd_path = cmd_path.clone();
+                // virtiofs mounts env_root as VM root, so:
+                // - Host: /home/user/.epkg/envs/myenv/usr/bin/cmd
+                // - Guest: /usr/bin/cmd
+                let guest_cmd_path = cmd_path.strip_prefix(env_root)
+                    .map(|rel| {
+                        let rel_str = rel.to_string_lossy().to_string();
+                        if rel_str.starts_with('/') {
+                            PathBuf::from(rel_str)
+                        } else {
+                            PathBuf::from(format!("/{}", rel_str))
+                        }
+                    })
+                    .unwrap_or_else(|_| cmd_path.clone());
 
                 // Ensure forward slashes for Linux guest (Windows uses backslash)
                 let guest_cmd_path_str = guest_cmd_path.to_string_lossy().replace('\\', "/");
