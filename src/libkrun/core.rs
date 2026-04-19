@@ -765,6 +765,14 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
         seen_canonical.push(canonical);
     };
 
+    // Add user-provided mount specs FIRST, before automatic mounts.
+    // This allows user mounts to take precedence and prevent duplicates.
+    for mount_spec_str in &run_options.effective_sandbox.mount_specs {
+        if let Some((host_path, guest_path, read_only, try_only)) = parse_mount_spec_for_virtiofs(mount_spec_str, env_root) {
+            try_add_mount(&host_path, Some(&guest_path), read_only, try_only);
+        }
+    }
+
     // Add epkg system directories
     //
     // We need to consider both host user (who owns the files being mounted)
@@ -826,13 +834,6 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
         try_add_mount(&dirs().home_epkg, None, false, true);
         try_add_mount(&dirs().home_cache, None, false, true);
         // Don't mount host /opt/epkg - not writable by non-root user
-    }
-
-    // Add user-provided mount specs from run_options
-    for mount_spec_str in &run_options.effective_sandbox.mount_specs {
-        if let Some((host_path, guest_path, read_only, try_only)) = parse_mount_spec_for_virtiofs(mount_spec_str, env_root) {
-            try_add_mount(&host_path, Some(&guest_path), read_only, try_only);
-        }
     }
 
     // Mount current working directory if not chdir_to_env_root

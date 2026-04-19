@@ -345,22 +345,25 @@ pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> Pr
         // Add user-provided mount specifications
         mount_spec_strings.extend(run_options.effective_sandbox.mount_specs.iter().cloned());
 
-        // In Fs mode, bind-mount current working directory to sandbox if not chdir_to_env_root
-        if effective_isolate_mode == IsolateMode::Fs && !run_options.chdir_to_env_root {
+        // In Fs/Env mode, bind-mount current working directory to sandbox if not chdir_to_env_root
+        // This ensures scripts and files in cwd are accessible after pivot_root
+        // Use '//' prefix for target to mount to host path (not inside env_root)
+        if effective_isolate_mode != IsolateMode::Vm && !run_options.chdir_to_env_root {
             if let Ok(cwd) = std::env::current_dir() {
                 // Bind-mount cwd to same path inside sandbox so commands can access it
                 let cwd_str = cwd.to_string_lossy();
                 if cwd.is_absolute() && cwd.exists() {
-                    trace!("Fs mode: adding bind mount for current working directory: {}", cwd_str);
-                    mount_spec_strings.push(format!("{}:{}", cwd_str, cwd_str));
+                    trace!("{:?} mode: adding bind mount for current working directory: {}", effective_isolate_mode, cwd_str);
+                    // Format: cwd://cwd means target is host path, not env_root-relative
+                    mount_spec_strings.push(format!("{}://{}", cwd_str, cwd_str));
                 }
             }
         }
     }
 
-    // Store working directory for Fs mode (used after pivot to restore cwd)
+    // Store working directory for Fs/Env mode (used after pivot to restore cwd)
     let mut working_dir = None;
-    if effective_isolate_mode == IsolateMode::Fs && !run_options.chdir_to_env_root {
+    if effective_isolate_mode != IsolateMode::Vm && !run_options.chdir_to_env_root {
         if let Ok(cwd) = std::env::current_dir() {
             if cwd.is_absolute() && cwd.exists() {
                 working_dir = Some(cwd);
@@ -894,6 +897,15 @@ fn env_mount_spec_strings(env_root: &Path, _run_options: &RunOptions, is_brew_en
 
     // Add standard environment mount specifications
     specs.extend(crate::mount::MOUNT_SPECS_ENV.iter().map(|s| s.to_string()));
+
+    // Mount home_epkg to make store symlinks accessible
+    // Symlinks like /usr/bin/htop -> /root/.epkg/store/... need store inside namespace
+    // Use '//' prefix for target to mount host /root/.epkg directly (not inside env_root)
+    // Format: HOST_DIR://TARGET means target is absolute host path, not env_root-relative
+    let home_epkg_path = dirs().home_epkg.display().to_string();
+    let home_epkg_mount_spec = format!("{}://{}", home_epkg_path, home_epkg_path);
+    debug!("env_mount_spec_strings: adding home_epkg mount spec: {}", home_epkg_mount_spec);
+    specs.push(home_epkg_mount_spec);
 
     // Add /root mount for non-root users
     if !uid.is_root() {

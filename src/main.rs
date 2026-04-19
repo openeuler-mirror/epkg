@@ -2040,6 +2040,22 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
         return Ok(());
     }
 
+    // For epkg run with a path (script), check .eenv BEFORE EPKG_ACTIVE_ENV.
+    // User explicitly runs script in project directory expecting .eenv discovery.
+    // EPKG_ACTIVE_ENV is the harness environment which should NOT override user intent.
+    if config.subcommand == EpkgCommand::Run && !config.run.command.is_empty() {
+        let command = config.run.command.clone();
+        let (is_path, search_dir) = determine_command_path_info(&command);
+        if is_path {
+            // Command is a path: prioritize .eenv discovery
+            if let Some(dot_eenv) = find_nearest_dot_eenv(&search_dir) {
+                set_env_name_by_path(&dot_eenv, config)?;
+                log::debug!("env: from run path .eenv at {} -> {}", dot_eenv.display(), config.common.env_name);
+                return Ok(());
+            }
+        }
+    }
+
     // IMPORTANT: Check EPKG_ACTIVE_ENV/EPKG_ENV_ROOT BEFORE /etc/epkg/env.yaml
     // On Windows VM guest, virtiofs might not be ready immediately, causing /etc/epkg/env.yaml read to fail.
     // EPKG env vars are passed from host and are always available.
