@@ -37,7 +37,7 @@ BUSYBOX_LINKS_DIR="$HOME/.epkg/busybox-bin"
 mkdir -p "$BUSYBOX_LINKS_DIR"
 E2E_BARE_ENV_EBIN="$HOME/.epkg/envs/$E2E_BARE_ENV/ebin"
 if [ -x "$E2E_BARE_ENV_EBIN/busybox.static" ]; then
-	for util in dirname basename date awk sed grep cat head tail rm mkdir cp uname hostname cut ls chmod ln id ping sort shuf; do
+	for util in dirname basename date awk sed grep cat head tail rm mkdir cp uname hostname cut ls chmod ln id ping sort shuf chown; do
 		ln -sf "$E2E_BARE_ENV_EBIN/busybox.static" "$BUSYBOX_LINKS_DIR/$util" 2>/dev/null || true
 	done
 fi
