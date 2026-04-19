@@ -101,7 +101,7 @@ pub fn deserialize_env_config_for(env_name: String) -> Result<EnvConfig> {
         }
     }
 
-    let mut env_config: EnvConfig = match fs::read_to_string(&config_path) {
+    let env_config: EnvConfig = match fs::read_to_string(&config_path) {
         Ok(contents) => {
             serde_yaml::from_str(&contents).map_err(|e| {
                 eyre::eyre!(
@@ -126,27 +126,9 @@ pub fn deserialize_env_config_for(env_name: String) -> Result<EnvConfig> {
         }
     };
 
-    // Override env_root with EPKG_ENV_ROOT if set (for VM guest execution)
-    // In VM guest, ~/.epkg is mounted at /opt/epkg, so paths need to be converted.
-    // However, only apply this override when loading the harness environment itself.
-    // When user explicitly selects a different environment (-e/--root), don't override.
-    if let Ok(epkg_env_root) = std::env::var("EPKG_ENV_ROOT") {
-        if !epkg_env_root.is_empty() {
-            // Check if this is the harness environment by comparing paths
-            // The harness env_root on host corresponds to EPKG_ENV_ROOT in guest
-            let is_harness_env = env_config.env_root.ends_with(&epkg_env_root.replace("/opt/epkg/envs/", ""));
-            if is_harness_env {
-                log::debug!("Overriding env_root from '{}' to '{}' (EPKG_ENV_ROOT - harness env)", env_config.env_root, epkg_env_root);
-                env_config.env_root = epkg_env_root.clone();
-                // Also update env_base if it was the same as env_root
-                if env_config.env_base == env_config.env_root {
-                    env_config.env_base = epkg_env_root;
-                }
-            } else {
-                log::debug!("Not applying EPKG_ENV_ROOT override: loading different env '{}'", env_config.env_root);
-            }
-        }
-    }
+    // Note: EPKG_ENV_ROOT was removed because we now use path-consistency mount.
+    // Host ~/.epkg is mounted to guest at the same path (/home/$EPKG_USER/.epkg),
+    // so paths stored in env.yaml work in both host and guest without transformation.
 
     Ok(env_config)
 }

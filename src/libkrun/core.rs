@@ -681,7 +681,7 @@ fn build_libkrun_config(
 /// ## Environment Detection Without EPKG_ACTIVE_ENV
 /// Since rootfs = env_root:
 /// - `try_detect_environment_from_env_yaml()` returns true
-/// - No need for parent to pass EPKG_ACTIVE_ENV/EPKG_ENV_ROOT
+/// - No need for parent to pass EPKG_ACTIVE_ENV (it's user-set, not auto-set)
 /// - Nested epkg auto-detects environment from `/etc/epkg/env.yaml`
 /// - `in_env_root = true` ensures operations use `/` as effective root
 ///
