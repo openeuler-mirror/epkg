@@ -4,6 +4,35 @@
 . "$(dirname "$0")/../vars.sh"
 . "$(dirname "$0")/../lib.sh"
 
+# In VM environment, busybox-bin path must be preserved after eval'ing epkg env activate.
+# The activation output replaces PATH, losing the busybox-bin directory.
+preserve_busybox_path() {
+	local output="$1"
+	# Find the export PATH= line and transform it using awk
+	local path_line
+	path_line=$(echo "$output" | awk '/^export PATH="/ {print; exit}')
+	if [ -n "$path_line" ] && [ "$E2E_BACKEND" = "vm" ] && [ -d "/home/${EPKG_USER:-$USER}/.epkg/busybox-bin" ]; then
+		local busybox_path="/home/${EPKG_USER:-$USER}/.epkg/busybox-bin"
+		path_line="export PATH=\"$busybox_path:${path_line#export PATH=\"}"
+		# Replace the original PATH line with the modified one using awk
+		output=$(echo "$output" | awk -v new="$path_line" '/^export PATH="/ {print new} !/^export PATH="/ {print}')
+	fi
+	eval "$output"
+}
+
+# Wrapper for epkg env activate/deactivate that preserves busybox-bin path in VM
+vm_activate() {
+	local output
+	output="$(epkg env activate "$@")" || return $?
+	preserve_busybox_path "$output"
+}
+
+vm_deactivate() {
+	local output
+	output="$(epkg env deactivate)" || return $?
+	preserve_busybox_path "$output"
+}
+
 log "Starting env register/activate test"
 
 # Create some test environments
@@ -51,7 +80,7 @@ esac
 
 # Activate an environment
 log "Activating env3"
-eval "$(epkg env activate "$ENV3")" || error "Failed to activate env3"
+vm_activate "$ENV3" || error "Failed to activate env3"
 
 # Check env path after activation
 log "Checking env path after activation"
@@ -82,7 +111,7 @@ fi
 
 # Deactivate
 log "Deactivating env3"
-eval "$(epkg env deactivate)" || error "Failed to deactivate env3"
+vm_deactivate || error "Failed to deactivate env3"
 
 # Check env path after de-activation
 log "Checking env path after de-activation"
@@ -152,7 +181,7 @@ log "History install count before: $HISTORY_BEFORE"
 
 # Activate the environment
 log "Activating $ENV_INSTALL"
-eval "$(epkg env activate "$ENV_INSTALL")" || error "Failed to activate $ENV_INSTALL"
+vm_activate "$ENV_INSTALL" || error "Failed to activate $ENV_INSTALL"
 
 # Verify EPKG_ACTIVE_ENV is set correctly
 if [ -z "$EPKG_ACTIVE_ENV" ]; then
@@ -198,7 +227,7 @@ fi
 
 # Deactivate the environment
 log "Deactivating $ENV_INSTALL"
-eval "$(epkg env deactivate)" || error "Failed to deactivate $ENV_INSTALL"
+vm_deactivate || error "Failed to deactivate $ENV_INSTALL"
 
 # ==============================================================================
 # Test: Install to activated environment in PURE mode
@@ -214,7 +243,7 @@ epkg env create "$ENV_PURE" -c alpine || error "Failed to create $ENV_PURE"
 
 # Activate with --pure mode
 log "Activating $ENV_PURE in pure mode"
-eval "$(epkg env activate "$ENV_PURE" --pure)" || error "Failed to activate $ENV_PURE --pure"
+vm_activate "$ENV_PURE" --pure || error "Failed to activate $ENV_PURE --pure"
 
 # Verify EPKG_ACTIVE_ENV has '!' suffix in pure mode
 if [ -z "$EPKG_ACTIVE_ENV" ]; then
@@ -253,7 +282,7 @@ fi
 
 # Deactivate
 log "Deactivating $ENV_PURE"
-eval "$(epkg env deactivate)" || error "Failed to deactivate $ENV_PURE"
+vm_deactivate || error "Failed to deactivate $ENV_PURE"
 
 log "Install to pure-activated environment test completed successfully"
 
@@ -273,11 +302,11 @@ epkg env create "$ENV_STACK2" -c alpine || error "Failed to create $ENV_STACK2"
 
 # Activate first environment
 log "Activating $ENV_STACK1"
-eval "$(epkg env activate "$ENV_STACK1")" || error "Failed to activate $ENV_STACK1"
+vm_activate "$ENV_STACK1" || error "Failed to activate $ENV_STACK1"
 
 # Activate second environment with --stack
 log "Stacking $ENV_STACK2 on top"
-eval "$(epkg env activate "$ENV_STACK2" --stack)" || error "Failed to stack $ENV_STACK2"
+vm_activate "$ENV_STACK2" --stack || error "Failed to stack $ENV_STACK2"
 
 # Verify EPKG_ACTIVE_ENV has both environments
 log "EPKG_ACTIVE_ENV=$EPKG_ACTIVE_ENV"
@@ -311,9 +340,9 @@ fi
 
 # Deactivate both (need to call deactivate twice)
 log "Deactivating $ENV_STACK2"
-eval "$(epkg env deactivate)" || error "Failed to deactivate $ENV_STACK2"
+vm_deactivate || error "Failed to deactivate $ENV_STACK2"
 log "Deactivating $ENV_STACK1"
-eval "$(epkg env deactivate)" || error "Failed to deactivate $ENV_STACK1"
+vm_deactivate || error "Failed to deactivate $ENV_STACK1"
 
 log "Install to stacked environment test completed successfully"
 

@@ -30,11 +30,23 @@ mkdir -p "$DL_CACHE"
 E2E_LOG_DIR="${E2E_LOG_DIR:-$HOME/.cache/epkg/e2e-logs}"
 mkdir -p "$E2E_LOG_DIR"
 
+# Create busybox-static symlinks for basic shell utilities needed by test scripts.
+# These utilities (dirname, mkdir, etc.) are needed before entry.sh can source vars.sh/lib.sh.
+# Store symlinks in ~/.epkg/busybox-bin to reuse the existing ~/.epkg mount (saves IRQ).
+BUSYBOX_LINKS_DIR="$HOME/.epkg/busybox-bin"
+mkdir -p "$BUSYBOX_LINKS_DIR"
+E2E_BARE_ENV_EBIN="$HOME/.epkg/envs/$E2E_BARE_ENV/ebin"
+if [ -x "$E2E_BARE_ENV_EBIN/busybox.static" ]; then
+	for util in dirname basename date awk sed grep cat head tail rm mkdir cp uname hostname cut; do
+		ln -sf "$E2E_BARE_ENV_EBIN/busybox.static" "$BUSYBOX_LINKS_DIR/$util" 2>/dev/null || true
+	done
+fi
+
 # Ensure Alpine-based harness environment exists (bash + busybox for tests / sh -c)
 ensure_e2e_bare_env() {
 	# Check if environment config file exists (more reliable than running epkg -e list
 	# which may panic when environment doesn't exist)
-	E2E_BARE_ENV_BASE="$HOME/.epkg/envs/$E2E_BARE_ENV"
+		E2E_BARE_ENV_BASE="$HOME/.epkg/envs/$E2E_BARE_ENV"
 	if [ -f "$E2E_BARE_ENV_BASE/etc/epkg/env.yaml" ]; then
 		return 0
 	fi
@@ -126,7 +138,7 @@ set -- \
 	$VM_EXTRA \
 	$MOUNTS \
 	-- env \
-	PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+	PATH=/home/$EPKG_USER_HOST/.epkg/busybox-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
 	HOME=/root \
 	USER=root \
 	EPKG_USER="$EPKG_USER_HOST" \
@@ -137,6 +149,7 @@ set -- \
 	TEST_REL_PATH="$TEST_REL_PATH" \
 	E2E_BACKEND=vm \
 	IN_E2E=1 \
+	E2E_BARE_ENV="$E2E_BARE_ENV" \
 	LIGHT_TEST="${LIGHT_TEST:-}" \
 	INTERACTIVE="${INTERACTIVE:-}" \
 	CONTAINER_NAME="${CONTAINER_NAME:-epkg-e2e-vm}" \
