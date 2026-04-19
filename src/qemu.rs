@@ -873,6 +873,8 @@ struct VmSetup {
 
 /// Perform common VM setup: parse config, setup logs, start virtiofsd, etc.
 /// Used by both `run_command_in_qemu` and `run_qemu_daemon_mode`.
+/// NOTE: Bind mounts for home_epkg/home_cache/opt_epkg are handled by namespace.rs
+/// before calling this function (via fork_and_execute_raw → create_process_with_namespaces).
 fn setup_qemu_vm(
     env_root: &Path,
     run_options: &RunOptions,
@@ -881,14 +883,6 @@ fn setup_qemu_vm(
     crate::run::ensure_linux_kvm_ready_for_vm()?;
     let (kernel, initrd, qemu_bin, virtiofsd_bin, extra_qemu_args) = parse_vmm_config(run_options)?;
     let (qemu_log_path, virtiofsd_log_path) = setup_vmm_logs()?;
-
-    // TODO: Setup bind mounts before starting virtiofsd (requires CAP_SYS_ADMIN)
-    // This ensures home_epkg/home_cache/opt_epkg are available inside env_root
-    // which is then shared with VM guest via single virtiofs
-    // let spec_strings = crate::namespace::vm_bind_mount_spec_strings();
-    // let spec_refs: Vec<&str> = spec_strings.iter().map(|s| s.as_str()).collect();
-    // let mounts = crate::mount::parse_mount_specs(&spec_refs);
-    // crate::mount::mount_batch_specs(&mounts, env_root, IsolateMode::Vm)?;
 
     let host_uid = users::get_current_uid();
     let host_gid = users::get_current_gid();

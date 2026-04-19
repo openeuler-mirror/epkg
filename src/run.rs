@@ -732,8 +732,6 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
     match isolate_mode {
         IsolateMode::Vm => {
             crate::debug_epkg!("fork_and_execute: starting for VM mode");
-            crate::debug_epkg!("fork_and_execute: options prepared, isolate_mode={:?}", prepared_opts.effective_sandbox.isolate_mode);
-            crate::debug_epkg!("fork_and_execute: VM mode selected");
 
             // Check for existing VM session to reuse (cross-process discovery)
             #[cfg(feature = "libkrun")]
@@ -748,89 +746,14 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
                 }
             }
 
+            // VM mode goes through namespace.rs path for:
+            // 1. User namespace setup (get CAP_SYS_ADMIN for bind mounts)
+            // 2. Bind mounts for home_epkg/home_cache/opt_epkg
+            // 3. Then start VM with virtiofs sharing env_root
             #[cfg(any(feature = "libkrun", target_os = "linux"))]
             {
-                crate::debug_epkg!("fork_and_execute: resolving command path");
-                let cmd_path = resolve_command_path(env_root, &prepared_opts)?;
-                crate::debug_epkg!("fork_and_execute: command path resolved: {:?}", cmd_path);
-
-                // EPKG_ACTIVE_ENV is ONLY set by end user (via eval "$(epkg env activate)").
-                // We never auto-convert -e/--root into EPKG_ACTIVE_ENV.
-                // If user set EPKG_ACTIVE_ENV on host, it will naturally pass to guest.
-                // Guest determines environment through other mechanisms:
-                // - /etc/epkg/env.yaml (if virtiofs root is env_root)
-                // - EPKG_ACTIVE_ENV if user set it
-                // - MAIN_ENV fallback
-
-                // Pass EPKG_USER, EPKG_HOME, EPKG_SHARED_STORE for path consistency
-                // These are internal helpers set by Rust (not user requirements)
-                // Guest will compute host-style paths using these
-                #[cfg(unix)]
-                let host_user = crate::dirs::get_username().unwrap_or_else(|_| "root".to_string());
-                #[cfg(windows)]
-                let host_user = std::env::var("USERNAME").unwrap_or_else(|_| "root".to_string());
-                prepared_opts.env_vars.insert("EPKG_USER".to_string(), host_user.clone());
-                // Compute host home path
-                #[cfg(target_os = "macos")]
-                let host_home = format!("/Users/{}", host_user);
-                #[cfg(not(target_os = "macos"))]
-                #[cfg(unix)]
-                let host_home = format!("/home/{}", host_user);
-                #[cfg(windows)]
-                let host_home = std::env::var("USERPROFILE").unwrap_or_else(|_| format!("C:\\Users\\{}", host_user));
-                #[cfg(unix)]
-                {
-                    prepared_opts.env_vars.insert("EPKG_HOME".to_string(), host_home.clone());
-                    // Pass shared_store setting for guest layout alignment
-                    let shared_store = config().init.shared_store;
-                    prepared_opts.env_vars.insert("EPKG_SHARED_STORE".to_string(), shared_store.to_string());
-                    debug!("Added EPKG_USER={} EPKG_HOME={} EPKG_SHARED_STORE={} for VM path consistency",
-                           host_user, host_home, shared_store);
-                }
-
-                // Convert host path to guest path (strip env_root prefix if inside)
-                // virtiofs mounts env_root as VM root, so:
-                // - Host: /home/user/.epkg/envs/myenv/usr/bin/cmd
-                // - Guest: /usr/bin/cmd
-                let guest_cmd_path = cmd_path.strip_prefix(env_root)
-                    .map(|rel| {
-                        let rel_str = rel.to_string_lossy().to_string();
-                        if rel_str.starts_with('/') {
-                            PathBuf::from(rel_str)
-                        } else {
-                            PathBuf::from(format!("/{}", rel_str))
-                        }
-                    })
-                    .unwrap_or_else(|_| cmd_path.clone());
-
-                // Ensure forward slashes for Linux guest (Windows uses backslash)
-                let guest_cmd_path_str = guest_cmd_path.to_string_lossy().replace('\\', "/");
-                let guest_cmd_path = Path::new(&guest_cmd_path_str).to_path_buf();
-
-                crate::debug_epkg!("Guest command path: {}", guest_cmd_path.display());
-
-                // Use VMM backend selection that respects --vmm option
-                // On Linux: use vmm::try_vmm_backends which tries backends in vmm_order
-                // On non-Linux: use direct libkrun call
-                #[cfg(target_os = "linux")]
-                {
-                    crate::debug_epkg!("fork_and_execute: calling try_vmm_backends with order {:?}...", prepared_opts.vmm_order);
-                    crate::vmm::try_vmm_backends(
-                        env_root,
-                        &prepared_opts,
-                        &guest_cmd_path,
-                        None,
-                        &prepared_opts.vmm_order,
-                        prepared_opts.vm_reuse_connect,
-                    )?;
-                    return Ok(None);
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    crate::debug_epkg!("fork_and_execute: calling run_command_in_krun...");
-                    crate::libkrun::run_command_in_krun(env_root, &prepared_opts, &guest_cmd_path)?;
-                    return Ok(None);
-                }
+                crate::debug_epkg!("fork_and_execute: VM mode using unified namespace path");
+                return fork_and_execute_raw(env_root, &prepared_opts);
             }
             #[cfg(not(any(feature = "libkrun", target_os = "linux")))]
             {

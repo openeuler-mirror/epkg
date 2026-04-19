@@ -2123,17 +2123,9 @@ pub fn run_command_in_krun(
     guest_cmd_path: &Path,
 ) -> Result<()> {
     crate::debug_epkg!("START run_command_in_krun");
-    crate::run::ensure_linux_kvm_ready_for_vm()?;
-
-    // TODO: On Linux, perform bind mounts before VM start (requires CAP_SYS_ADMIN)
-    // This ensures home_epkg/home_cache/opt_epkg are available inside env_root
-    // which is then shared with VM guest via single virtiofs (no extra mounts needed)
-    // #[cfg(target_os = "linux")]
-    // {
-    //     use crate::models::IsolateMode;
-    //     let spec_strings = crate::namespace::vm_bind_mount_spec_strings();
-    //     ...
-    // }
+    // NOTE: On Linux, bind mounts for home_epkg/home_cache/opt_epkg are handled
+    // by namespace.rs before calling this function (via fork_and_execute_raw).
+    // This function is called inside a namespace with CAP_SYS_ADMIN available.
 
     crate::debug_epkg!("building config...");
     let config = build_libkrun_config(env_root, run_options, guest_cmd_path)?;
