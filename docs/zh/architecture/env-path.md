@@ -313,11 +313,16 @@ epkg install jq                 # 安装到 myenv
 | `env_name_explicit` | src/models.rs | CLI -e 使用标记 |
 | `determine_environment_final()` | src/main.rs | 环境选择流程 |
 | `get_env_root()` | src/dirs.rs | env_root 计算 |
-| `EPKG_USER` 处理 | src/dirs.rs | 路径一致性（待实现） |
+| `get_home()` | src/dirs.rs | 支持 EPKG_HOME/EPKG_USER |
+| `EPKG_USER/EPKG_HOME` | src/run.rs | VM 路径一致性 |
 
-## 待改进项
+## 已完成改进
 
-1. **移除 EPKG_ENV_ROOT**：使用路径一致性 mount + EPKG_USER 替代
-2. **dirs.rs 使用 EPKG_USER**：计算 host 侧路径而非 USER
-3. **vm.sh 调整 mount**：`$HOME/.epkg:/home/$EPKG_USER/.epkg`（相同路径）
-4. **统一报错行为**：非 `epkg run` 无用户需求时报错而非 fallback
+1. **移除 EPKG_ENV_ROOT** ✓：使用路径一致性 mount + EPKG_HOME/EPKG_USER 替代
+2. **dirs.rs 支持 EPKG_HOME/EPKG_USER** ✓：计算 host 侧路径
+3. **vm.sh mount 到相同路径** ✓：`$HOME/.epkg:/home/$EPKG_USER/.epkg`
+
+## 待完善项
+
+1. **更多测试脚本适配 EPKG_HOME**
+2. **EPKG_ACTIVE_ENV 传递逻辑优化**：仅当 env_explicit=true 时传递
