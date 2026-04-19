@@ -532,9 +532,10 @@ fn build_libkrun_config(
     let base_cmdline = {
         // All Windows-specific params in one place, no duplication
         // Performance: Disable unused virtio devices to reduce boot time (~100ms savings)
+        // Note: rootflags=dax is required to pass DAX mount option to virtiofs root filesystem
         format!(
             "reboot=k panic=-1 panic_print=0 nomodule console=ttyS0,115200 {} \
-             rootfstype=virtiofs rw dax no-kvmapf \
+             rootfstype=virtiofs rw rootflags=dax no-kvmapf \
              lpj=11979608 tsc=reliable no_timer_check \
              i8042.noaux i8042.nomux i8042.nopnp \
              {} nowatchdog nmi_watchdog=0 \
@@ -547,9 +548,10 @@ fn build_libkrun_config(
     #[cfg(not(target_os = "windows"))]
     let base_cmdline = {
         let ep = if vm_debug { "earlyprintk=hvc0" } else { "" };
+        // Note: rootflags=dax is required to pass DAX mount option to virtiofs root filesystem
         format!(
             "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 {} \
-             rootfstype=virtiofs rw dax no-kvmapf {} {}{} init={}",
+             rootfstype=virtiofs rw rootflags=dax no-kvmapf {} {}{} init={}",
             ep, vm_perf, loglevel, reverse, init_path
         )
     };
