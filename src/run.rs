@@ -264,6 +264,7 @@ pub fn ensure_linux_kvm_ready_for_vm() -> Result<()> {
 
 /// No-op on non-Linux: KVM device exists only on Linux hosts. Kept for `libkrun` callers on macOS/Windows.
 #[cfg(all(not(target_os = "linux"), feature = "libkrun"))]
+#[allow(dead_code)]
 pub fn ensure_linux_kvm_ready_for_vm() -> Result<()> {
     Ok(())
 }
