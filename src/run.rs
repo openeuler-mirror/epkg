@@ -747,16 +747,27 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
                 }
             }
 
-            // VM mode goes through namespace.rs path for:
-            // 1. User namespace setup (get CAP_SYS_ADMIN for bind mounts)
-            // 2. Bind mounts for home_epkg/home_cache/opt_epkg
-            // 3. Then start VM with virtiofs sharing env_root
-            #[cfg(any(feature = "libkrun", target_os = "linux"))]
+            // Linux VM: namespace path for bind mounts then single virtiofs
+            // macOS/Windows VM: direct libkrun with multiple virtiofs mounts
+            #[cfg(target_os = "linux")]
             {
-                crate::debug_epkg!("fork_and_execute: VM mode using unified namespace path");
+                // VM mode goes through namespace.rs path for:
+                // 1. User namespace setup (get CAP_SYS_ADMIN for bind mounts)
+                // 2. Bind mounts for home_epkg/home_cache/opt_epkg into env_root
+                // 3. Then start VM with single virtiofs sharing env_root
+                crate::debug_epkg!("fork_and_execute: VM mode using namespace path");
                 return fork_and_execute_raw(env_root, &prepared_opts);
             }
-            #[cfg(not(any(feature = "libkrun", target_os = "linux")))]
+            #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+            {
+                // macOS/Windows: no namespace support, use libkrun directly
+                // with multiple virtiofs mounts for home_epkg/home_cache/opt_epkg
+                crate::debug_epkg!("fork_and_execute: VM mode using direct libkrun path");
+                let guest_cmd_path = PathBuf::from(&prepared_opts.command);
+                crate::libkrun::run_command_in_krun(env_root, &prepared_opts, &guest_cmd_path)?;
+                return Ok(None);
+            }
+            #[cfg(not(any(target_os = "linux", feature = "libkrun")))]
             {
                 return Err(eyre::eyre!(
                     "VM sandbox requires libkrun feature. \
