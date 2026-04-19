@@ -48,7 +48,12 @@ else
     TEST_DIR="${HOME}/.epkg/tmp/env-path-test-$$"
 fi
 mkdir -p "$TEST_DIR"
-trap "rm -rf '$TEST_DIR'" EXIT
+# Cleanup function: remove temp directory and test environments
+cleanup() {
+    rm -rf "$TEST_DIR"
+    epkg env remove test-registered-search 2>/dev/null
+}
+trap cleanup EXIT
 
 ORIG_DIR=$(pwd)
 
@@ -204,10 +209,16 @@ if [ "$(uname -s)" = "Darwin" ]; then
         fi
     fi
 else
-    epkg install coreutils --assume-yes
+    # Install coreutils in MAIN_ENV explicitly (-e main) since EPKG_ACTIVE_ENV
+    # (harness environment) affects all epkg operations inside VM guest.
+    # The test purpose is to verify registered env search and MAIN_ENV fallback.
+    epkg -e main --assume-yes install coreutils
+    # Register main so it's searched for echo
+    epkg env register main 2>/dev/null || true
     if ! epkg run echo "test" >/dev/null; then
         error "Failed to fallback to MAIN_ENV"
     fi
+    epkg env unregister main 2>/dev/null || true
 fi
 
 # ============================================================================

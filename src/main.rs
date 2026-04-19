@@ -2053,6 +2053,16 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
                 log::debug!("env: from run path .eenv at {} -> {}", dot_eenv.display(), config.common.env_name);
                 return Ok(());
             }
+        } else if !config.common.env_name_explicit {
+            // Command is a simple name (not a path): search registered environments FIRST
+            // BUT only when -e was NOT explicitly given - respect explicit -e choice
+            // EPKG_ACTIVE_ENV indicates shell context but shouldn't override command discovery
+            // User running "epkg run htop" expects to find htop wherever it's installed
+            search_registered_envs(&command, config);
+            if !config.common.env_name.is_empty() {
+                log::debug!("env: from run command (registered) -> {}", config.common.env_name);
+                return Ok(());
+            }
         }
     }
 
@@ -2061,6 +2071,7 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
     // EPKG env vars are passed from host and are always available.
     // On Linux VM guest, we still prefer /etc/epkg/env.yaml when available (virtiofs is ready).
     // This order ensures VM guest can reliably detect environment from host-passed env vars.
+    // EPKG_ACTIVE_ENV is used as fallback when no registered env found the command.
     if try_env_from_epkg_activenv(config) {
         return Ok(());
     }
