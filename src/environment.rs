@@ -1985,13 +1985,8 @@ pub fn registered_env_configs(shared_store: bool) -> Vec<EnvConfig> {
             config.name = format!("{}/{}", owner_name, config.name);
         }
 
-        // Fix env_root for VM guest: if stored env_root doesn't exist, use the actual path
-        // This handles the case where config stores host path but we're in VM guest
-        // where host's ~/.epkg is mounted to /root/.epkg (or /opt/epkg)
-        if !lfs::exists_or_any_symlink(Path::new(&config.env_root)) {
-            config.env_root = env_path.display().to_string();
-            config.env_base = env_path.display().to_string();
-        }
+        // With path-consistency mount, stored paths are valid everywhere
+        // No need to fix env_root - it works in both host and guest
 
         configs.push(config);
         Ok(())

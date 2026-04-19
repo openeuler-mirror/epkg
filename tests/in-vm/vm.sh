@@ -52,26 +52,25 @@ ensure_e2e_bare_env
 # Rootfs, rng, and vsock each use one IRQ. So we can only have ~8 additional mounts.
 # To stay under the limit, mount parent directories instead of multiple separate paths.
 #
-# Strategy: Use private layout (EPKG_SHARED_STORE=false) to match host's non-root layout.
-# Mount host's ~/.epkg to /root/.epkg for user_envs (private: user_envs=$HOME/.epkg/envs).
-# EPKG_USER passes host username, so user_envs=$HOME/.epkg/envs=/root/.epkg/envs.
-# Self env is at user_envs/self=/root/.epkg/envs/self which exists via mount from host.
-# Store is at /root/.epkg/store for package symlinks (private layout uses $HOME/.epkg/store).
-#
-# Also mount store to original path (/opt/epkg/store) for cross-filesystem symlink resolution.
-# This follows libkrun's non-root-host + root-guest logic in build_virtiofs_mount_specs().
+# Strategy: Path-consistency mount - mount to SAME paths as host.
+# - Host ~/.epkg -> Guest /home/$EPKG_USER/.epkg (not /root/.epkg)
+# - dirs.rs uses EPKG_USER/EPKG_HOME to compute host-style paths
+# - Config file paths work in both host and guest without transformation
 #
 # Mount order: tmpfs first, then virtiofs.
 MOUNTS="-m tmpfs:/root"
-MOUNTS="$MOUNTS -m $HOME/.epkg:/root/.epkg"
-# Mount store to /opt/epkg/store for symlink resolution (different canonical path from ~/.epkg)
+# Path-consistency mount: host's .epkg to guest's same path
+# EPKG_USER is passed from host, guest uses it for path computation
+EPKG_USER_HOST=$(whoami)
+MOUNTS="$MOUNTS -m $HOME/.epkg:/home/$EPKG_USER_HOST/.epkg"
+# Mount store to /opt/epkg/store for symlink resolution
 MOUNTS="$MOUNTS -m $HOME/.epkg/store:/opt/epkg/store:ro"
 # Mount the entire epkg cache directory to cover downloads and e2e-logs
 EPKG_CACHE_DIR="${HOME}/.cache/epkg"
 mkdir -p "$EPKG_CACHE_DIR/downloads" "$EPKG_CACHE_DIR/e2e-logs"
-# Mount to /root/.cache for private layout (cache = $HOME/.cache/epkg)
-MOUNTS="$MOUNTS -m $EPKG_CACHE_DIR:/root/.cache"
-E2E_LOG_DIR=/root/.cache/e2e-logs  # Guest path (under the mounted cache)
+# Path-consistency: mount cache to same path in guest
+MOUNTS="$MOUNTS -m $EPKG_CACHE_DIR:/home/$EPKG_USER_HOST/.cache"
+E2E_LOG_DIR=/home/$EPKG_USER_HOST/.cache/e2e-logs  # Guest path (same as host)
 RESOLV_TMP="${TMPDIR:-/tmp}/epkg-e2e-resolv.$$"
 # Guest DNS: public resolvers first (work through QEMU NAT), then QEMU slirp (10.0.2.3) and host
 # upstreams from systemd. Slirp-only configs often return EAI_AGAIN on some hosts. Do not bind-mount host
@@ -130,7 +129,9 @@ set -- \
 	PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
 	HOME=/root \
 	USER=root \
-	EPKG_USER="$(whoami)" \
+	EPKG_USER="$EPKG_USER_HOST" \
+	EPKG_HOME="/home/$EPKG_USER_HOST" \
+	EPKG_HOST_OS="$(uname -s)" \
 	EPKG_SHARED_STORE=false \
 	E2E_DIR="$E2E_DIR" \
 	EPKG_BINARY="$EPKG_GUEST_BINARY" \
@@ -147,7 +148,7 @@ set -- \
 	E2E_VMM="${E2E_VMM:-}" \
 	E2E_COMBO="${E2E_COMBO:-}" \
 	E2E_BARE_CHROOT="${E2E_BARE_CHROOT:-}" \
-	E2E_LOG_DIR=/opt/epkg/cache/e2e-logs \
+	E2E_LOG_DIR="$E2E_LOG_DIR" \
 	/bin/bash "$E2E_DIR/entry.sh" $ADDITIONAL_ARGS
 
 	echo "Running in-vm test: $*" >&2

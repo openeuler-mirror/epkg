@@ -296,26 +296,9 @@ pub fn get_env_root(env_name: String) -> Result<PathBuf> {
             let env_config = crate::io::deserialize_env_config_for(env_name)?;
             Ok(PathBuf::from(&env_config.env_root))
         }
-    } else if let Ok(active_env) = std::env::var("EPKG_ACTIVE_ENV") {
-        // EPKG_ACTIVE_ENV may contain multiple envs (stack mode) or have PURE_ENV_SUFFIX
-        // Check if requested env_name matches any active environment
-        let active_envs: Vec<&str> = active_env.split(':').collect();
-        for active_env_name in active_envs {
-            let active_env_name = active_env_name.trim_end_matches(crate::models::PURE_ENV_SUFFIX);
-            if env_name == active_env_name {
-                // Found in EPKG_ACTIVE_ENV - use EPKG_ENV_ROOT if available
-                if let Ok(env_root) = std::env::var("EPKG_ENV_ROOT") {
-                    log::debug!("get_env_root: using EPKG_ENV_ROOT={} for EPKG_ACTIVE_ENV env '{}'",
-                        env_root, env_name);
-                    return Ok(PathBuf::from(env_root));
-                }
-                break;
-            }
-        }
-        // Not found in EPKG_ACTIVE_ENV or EPKG_ENV_ROOT not set - load from config
-        let env_config = crate::io::deserialize_env_config_for(env_name)?;
-        Ok(PathBuf::from(&env_config.env_root))
     } else {
+        // Load from config file
+        // With path-consistency mount, stored paths are valid in both host and guest
         let env_config = crate::io::deserialize_env_config_for(env_name)?;
         Ok(PathBuf::from(&env_config.env_root))
     }
@@ -516,6 +499,35 @@ pub fn get_epkg_src_path() -> PathBuf {
 /// Retrieves the home directory path, trying multiple methods.
 /// When running as setuid, validates environment variables against real UID for security.
 pub fn get_home() -> Result<String> {
+    // EPKG_HOME: explicit host home directory for VM guest path consistency
+    // When set, guest uses the same paths as host (mount to same path, not /root/.epkg)
+    if let Ok(home) = env::var("EPKG_HOME") {
+        if !home.is_empty() {
+            log::debug!("get_home: using EPKG_HOME='{}'", home);
+            return Ok(home);
+        }
+    }
+
+    // EPKG_USER: host username for VM guest path computation
+    // Build host-style home path: /home/$EPKG_USER (Linux) or /Users/$EPKG_USER (macOS)
+    #[cfg(unix)]
+    if let Ok(user) = env::var("EPKG_USER") {
+        if !user.is_empty() {
+            // Check if host is macOS by looking at EPKG_HOST_OS
+            if let Ok(host_os) = env::var("EPKG_HOST_OS") {
+                if host_os == "Darwin" {
+                    let host_home = format!("/Users/{}", user);
+                    log::debug!("get_home: using macOS host path /Users/{} from EPKG_USER", user);
+                    return Ok(host_home);
+                }
+            }
+            // Default Linux host path
+            let host_home = format!("/home/{}", user);
+            log::debug!("get_home: using Linux host path /home/{} from EPKG_USER", user);
+            return Ok(host_home);
+        }
+    }
+
     // On Windows, prioritize USERPROFILE over HOME since HOME may be set by
     // MSYS2/Cygwin and point to their internal directories instead of the
     // actual Windows user profile.

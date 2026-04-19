@@ -754,39 +754,38 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
                 let cmd_path = resolve_command_path(env_root, &prepared_opts)?;
                 crate::debug_epkg!("fork_and_execute: command path resolved: {:?}", cmd_path);
 
-                // Add EPKG_ACTIVE_ENV and EPKG_ENV_ROOT for VM guest process
-                // This is critical for nested epkg calls to know the current environment
-                // In VM guest, the mount target depends on shared_store setting:
-                // - shared_store=true:  ~/.epkg mounted to /opt/epkg, so /opt/epkg/envs/NAME
-                // - shared_store=false: ~/.epkg mounted to /root/.epkg, so /root/.epkg/envs/NAME
+                // Pass EPKG_ACTIVE_ENV to VM guest when user explicitly specified environment
+                // This reflects user intent (from -e/--root), not internal workaround
+                // EPKG_ENV_ROOT is removed - use path-consistency mount instead
                 let env_name = config().common.env_name.clone();
-                if !env_name.is_empty() {
+                if !env_name.is_empty() && config().common.env_explicit {
                     prepared_opts.env_vars.insert("EPKG_ACTIVE_ENV".to_string(), env_name.clone());
-                    // Convert host env_root to guest path based on shared_store
-                    let home_epkg = crate::models::dirs().home_epkg.clone();
-                    let shared_store = config().init.shared_store;
-                    let guest_env_root = if let Ok(stripped) = env_root.strip_prefix(&home_epkg) {
-                        let s = stripped.to_string_lossy();
-                        // Use guest mount target based on shared_store
-                        // shared_store=true: /opt/epkg (public layout)
-                        // shared_store=false: /root/.epkg (private layout, guest runs as root)
-                        let mount_target = if shared_store { "/opt/epkg" } else { "/root/.epkg" };
-                        let prefix = if s.starts_with('/') { mount_target } else { &format!("{}/", mount_target) };
-                        format!("{}{}", prefix, s)
-                    } else {
-                        env_root.display().to_string()
-                    };
-                    prepared_opts.env_vars.insert("EPKG_ENV_ROOT".to_string(), guest_env_root.clone());
-                    debug!("Added EPKG_ACTIVE_ENV={} EPKG_ENV_ROOT={} (converted from {} for shared_store={}) for VM execution",
-                           env_name, guest_env_root, env_root.display(), shared_store);
+                    debug!("Added EPKG_ACTIVE_ENV={} for VM execution (user explicit choice)", env_name);
                 }
 
+                // Pass EPKG_USER and EPKG_HOME for path consistency
+                // Guest will compute host-style paths using these
+                #[cfg(unix)]
+                let host_user = crate::dirs::get_username().unwrap_or_else(|_| "root".to_string());
+                #[cfg(windows)]
+                let host_user = std::env::var("USERNAME").unwrap_or_else(|_| "root".to_string());
+                prepared_opts.env_vars.insert("EPKG_USER".to_string(), host_user.clone());
+                // Compute host home path
+                #[cfg(target_os = "macos")]
+                let host_home = format!("/Users/{}", host_user);
+                #[cfg(not(target_os = "macos"))]
+                #[cfg(unix)]
+                let host_home = format!("/home/{}", host_user);
+                #[cfg(windows)]
+                let host_home = std::env::var("USERPROFILE").unwrap_or_else(|_| format!("C:\\Users\\{}", host_user));
+                #[cfg(unix)]
+                prepared_opts.env_vars.insert("EPKG_HOME".to_string(), host_home.clone());
+                #[cfg(unix)]
+                debug!("Added EPKG_USER={} EPKG_HOME={} for VM path consistency", host_user, host_home);
+
                 // Convert host path to guest path (strip env_root prefix if inside)
-                let guest_cmd_path = if let Ok(stripped) = cmd_path.strip_prefix(env_root) {
-                    Path::new("/").join(stripped)
-                } else {
-                    cmd_path.clone()
-                };
+                // With path-consistency mount, paths are the same - no conversion needed
+                let guest_cmd_path = cmd_path.clone();
 
                 // Ensure forward slashes for Linux guest (Windows uses backslash)
                 let guest_cmd_path_str = guest_cmd_path.to_string_lossy().replace('\\', "/");

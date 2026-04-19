@@ -39,11 +39,16 @@ env_name_from_path() {
 }
 
 # Create a temporary directory for our test environments
-# In VM harness: /home/wfg/.epkg is mounted as /root/.epkg (not /opt/epkg)
-# due to libkrun's duplicate mount detection skipping the /opt/epkg mount
-# In host/container: use ~/.epkg/tmp to ensure same filesystem as store (required for LinkType::Move)
+# Use EPKG_HOME for path-consistency mount (same paths in host and guest)
+# In host/container: use ~/.epkg/tmp
+# In VM: use /home/$EPKG_USER/.epkg/tmp (same path as host via mount)
 if [ "$E2E_BACKEND" = "vm" ]; then
-    TEST_DIR="/root/.epkg/tmp/env-path-test-$$"
+    # Path-consistency: guest uses same paths as host
+    if [ -n "$EPKG_HOME" ]; then
+        TEST_DIR="$EPKG_HOME/.epkg/tmp/env-path-test-$$"
+    else
+        TEST_DIR="/root/.epkg/tmp/env-path-test-$$"
+    fi
 else
     TEST_DIR="${HOME}/.epkg/tmp/env-path-test-$$"
 fi
