@@ -52,7 +52,7 @@ ensure_e2e_bare_env() {
 	fi
 	echo "Creating in-vm harness environment '$E2E_BARE_ENV' (channel alpine)..." >&2
 	"$EPKG_BINARY" env create "$E2E_BARE_ENV" -c alpine || exit 1
-	"$EPKG_BINARY" -e "$E2E_BARE_ENV" --assume-yes install bash busybox-static || exit 1
+	"$EPKG_BINARY" -e "$E2E_BARE_ENV" --assume-yes install bash busybox-static shadow musl-utils || exit 1
 }
 
 ensure_e2e_bare_env
