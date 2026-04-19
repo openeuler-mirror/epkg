@@ -754,14 +754,13 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
                 let cmd_path = resolve_command_path(env_root, &prepared_opts)?;
                 crate::debug_epkg!("fork_and_execute: command path resolved: {:?}", cmd_path);
 
-                // Pass EPKG_ACTIVE_ENV to VM guest when user explicitly specified environment
-                // This reflects user intent (from -e/--root), not internal workaround
-                // EPKG_ENV_ROOT is removed - use path-consistency mount instead
-                let env_name = config().common.env_name.clone();
-                if !env_name.is_empty() && config().common.env_explicit {
-                    prepared_opts.env_vars.insert("EPKG_ACTIVE_ENV".to_string(), env_name.clone());
-                    debug!("Added EPKG_ACTIVE_ENV={} for VM execution (user explicit choice)", env_name);
-                }
+                // EPKG_ACTIVE_ENV is ONLY set by end user (via eval "$(epkg env activate)").
+                // We never auto-convert -e/--root into EPKG_ACTIVE_ENV.
+                // If user set EPKG_ACTIVE_ENV on host, it will naturally pass to guest.
+                // Guest determines environment through other mechanisms:
+                // - /etc/epkg/env.yaml (if virtiofs root is env_root)
+                // - EPKG_ACTIVE_ENV if user set it
+                // - MAIN_ENV fallback
 
                 // Pass EPKG_USER and EPKG_HOME for path consistency
                 // Guest will compute host-style paths using these

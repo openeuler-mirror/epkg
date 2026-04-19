@@ -25,7 +25,8 @@ epkg --root <DIR> <command> # 指定环境根目录
 **来源**：
 - 用户执行 `eval "$(epkg env activate myenv)"` 设置
 - 测试脚本显式设置（模拟用户行为）
-- 由 Rust 代码自动设置（传递用户意图，如 host → VM）
+
+**重要**：Rust 代码**不**自动设置 EPKG_ACTIVE_ENV。即使 VM guest 模式，也不从 `-e` 参数自动转换。EPKG_ACTIVE_ENV 只反映用户需求。
 
 **格式**：
 ```bash
@@ -325,4 +326,3 @@ epkg install jq                 # 安装到 myenv
 ## 待完善项
 
 1. **更多测试脚本适配 EPKG_HOME**
-2. **EPKG_ACTIVE_ENV 传递逻辑优化**：仅当 env_explicit=true 时传递
