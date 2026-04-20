@@ -78,15 +78,24 @@ log "epkg self install inside chroot"
 chroot "$CHROOT" /usr/bin/epkg self install || error "self install in chroot"
 
 log "Creating sys env with --root / inside chroot"
-chroot "$CHROOT" /usr/bin/epkg env create sys -c alpine --root / || error "env create sys --root /"
+# Use same syntax as env-path-auto-discovery.sh: env create --root <PATH> -c <CHANNEL>
+chroot "$CHROOT" /usr/bin/epkg env create --root / -c alpine || error "env create --root /"
+
+# Get auto-generated env name from --root /
+# When --root / is used, env name is auto-generated as "__" (root path converted)
+SYS_ENV=$(chroot "$CHROOT" /usr/bin/epkg env list | grep -E '^__' | head -1 | awk '{print $1}')
+if [ -z "$SYS_ENV" ]; then
+    error "Failed to find auto-generated sys env"
+fi
+log "Auto-generated sys env name: $SYS_ENV"
 
 log "Installing jq in sys"
-chroot "$CHROOT" /usr/bin/epkg -e sys --assume-yes install jq coreutils bash || error "install jq"
+chroot "$CHROOT" /usr/bin/epkg -e "$SYS_ENV" --assume-yes install jq coreutils bash || error "install jq"
 
 log "Verifying jq via epkg run (chroot)"
-chroot "$CHROOT" /usr/bin/epkg -e sys run jq --version || error "jq run failed"
+chroot "$CHROOT" /usr/bin/epkg -e "$SYS_ENV" run jq --version || error "jq run failed"
 
 log "Removing sys environment"
-chroot "$CHROOT" /usr/bin/epkg --assume-yes env remove sys || true
+chroot "$CHROOT" /usr/bin/epkg --assume-yes env remove "$SYS_ENV" || true
 
 log "Bare rootfs (chroot) test completed successfully"
