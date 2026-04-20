@@ -320,8 +320,24 @@ ISOLATE_OPTS="--isolate=vm --vmm=$VMM_BACKEND"
 
 log "Isolate options: $ISOLATE_OPTS"
 
-# Remove possible old envs
-run_epkg_cmd "env remove $ENV_NAME" >/dev/null 2>&1 || true
+# Clean up any previous test artifacts (processes, VM sessions, environments)
+cleanup_previous_test() {
+    log "Cleaning up previous test artifacts..."
+
+    # Kill any running epkg processes that might hold file locks
+    powershell.exe -Command "Get-Process | Where-Object { \$_.Path -like '*epkg*' } | Stop-Process -Force -ErrorAction SilentlyContinue" 2>/dev/null || true
+
+    # Remove VM session file if exists
+    rm -f "/mnt/c/Users/${WIN_USER}/.epkg/run/vm-sessions/${ENV_NAME}.json" 2>/dev/null || true
+
+    # Wait a moment for processes to terminate
+    sleep 2
+
+    # Remove environment directory if exists
+    powershell.exe -Command "Remove-Item -Recurse -Force 'C:\Users\${WIN_USER}\.epkg\envs\${ENV_NAME}' -ErrorAction SilentlyContinue" 2>/dev/null || true
+}
+
+cleanup_previous_test
 
 log "Creating test environment $ENV_NAME"
 output=$(capture_with_timeout env create "$ENV_NAME" -c alpine)
@@ -334,14 +350,14 @@ if ! echo "$output" | grep -qi "created\|success"; then
 fi
 
 log "Installing bash coreutils into $ENV_NAME"
-output=$(capture_with_timeout 120 -e "$ENV_NAME" --assume-yes install bash coreutils) || {
+output=$(capture_with_timeout 300 -e "$ENV_NAME" --assume-yes install bash coreutils) || {
     echo "$output" >&2
     error "Failed to install coreutils in sandbox env"
 }
 
 # Ensure /etc/passwd has root so whoami prints "root" in the VM
-ENV_ROOT_WIN="C:\\Users\\$(whoami)\\.epkg\\envs\\$ENV_NAME"
-ENV_ROOT="/mnt/c/Users/$(whoami)/.epkg/envs/$ENV_NAME"
+ENV_ROOT_WIN="C:\\Users\\${WIN_USER}\\\.epkg\\envs\\$ENV_NAME"
+ENV_ROOT="/mnt/c/Users/${WIN_USER}/.epkg/envs/$ENV_NAME"
 
 # ============================================
 # Test Suite: VM Sandbox (WSL2 + Windows)
