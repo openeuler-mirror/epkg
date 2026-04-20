@@ -581,6 +581,49 @@ fn build_libkrun_config(
         log::debug!("libkrun: TSI disabled via EPKG_TSI_DISABLE env var");
     }
 
+    // Pass host OS info for guest path computation using epkg.var.XXX format.
+    // This allows guest to compute correct paths when running in VM.
+    #[cfg(target_os = "windows")]
+    {
+        kernel_args.push_str(" epkg.var.EPKG_HOST_OS=Windows");
+        // Pass host home directory (USERPROFILE on Windows)
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            // Convert to Linux guest path format: C:\Users\aa -> /mnt/c/Users/aa
+            let guest_home = windows_path_to_linux_guest(&home);
+            kernel_args.push_str(&format!(" epkg.var.EPKG_HOME={}", percent_encode(&guest_home)));
+        }
+        // Pass host username
+        if let Ok(username) = std::env::var("USERNAME") {
+            kernel_args.push_str(&format!(" epkg.var.EPKG_USER={}", percent_encode(&username)));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        kernel_args.push_str(" epkg.var.EPKG_HOST_OS=Darwin");
+        // Pass host home directory
+        if let Ok(home) = std::env::var("HOME") {
+            kernel_args.push_str(&format!(" epkg.var.EPKG_HOME={}", percent_encode(home)));
+        }
+        // Pass host username
+        if let Ok(username) = std::env::var("USER") {
+            kernel_args.push_str(&format!(" epkg.var.EPKG_USER={}", percent_encode(&username)));
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        kernel_args.push_str(" epkg.var.EPKG_HOST_OS=Linux");
+        // Pass host home directory
+        if let Ok(home) = std::env::var("HOME") {
+            kernel_args.push_str(&format!(" epkg.var.EPKG_HOME={}", percent_encode(&home)));
+        }
+        // Pass host username
+        if let Ok(username) = std::env::var("USER") {
+            kernel_args.push_str(&format!(" epkg.var.EPKG_USER={}", percent_encode(&username)));
+        }
+    }
+
     // Note: epkg.vsock_reverse=1 is now default in libkrun's DEFAULT_KERNEL_CMDLINE for Windows.
     // Only add epkg.vsock_reverse=0 here when explicitly disabling reverse mode (not currently needed).
     crate::debug_epkg!("libkrun: reverse vsock mode is DEFAULT in libkrun");
@@ -1585,8 +1628,8 @@ impl KrunContext {
         let exec_c = CString::new(exec_path)
             .map_err(|e| eyre::eyre!("invalid exec path: {}", e))?;
 
-        // For now, we don't pass args or env - just set the exec path
-        // The kernel cmdline and virtiofs provide the rest
+        // For now, we don't pass args or env via krun_set_exec.
+        // Environment variables are passed via kernel cmdline (epkg.var.XXX=yyy).
         check_status(
             "krun_set_exec",
             unsafe { krun_set_exec(self.ctx_id, exec_c.as_ptr(), std::ptr::null(), std::ptr::null()) }

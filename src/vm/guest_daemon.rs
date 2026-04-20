@@ -554,18 +554,32 @@ fn spawn_child_piped(request: &CommandRequest) -> Result<SpawnOutcome> {
             let mut argv: Vec<*const libc::c_char> = args.iter().map(|s| s.as_ptr()).collect();
             argv.push(std::ptr::null());
 
-            // Build envp (including PATH)
-            let mut envp: Vec<std::ffi::CString> = Vec::new();
+            // Build envp - inherit current process env vars and merge with request.env
+            // This ensures EPKG_HOME, EPKG_HOST_OS etc set by init are passed to the command
+            let mut merged_env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+            // First, inherit all current environment variables
+            for (k, v) in std::env::vars() {
+                merged_env.insert(k, v);
+            }
+
+            // Then, override with request.env (user-specified vars take precedence)
             for (k, v) in &request.env {
+                merged_env.insert(k.clone(), v.clone());
+            }
+
+            // Build envp from merged environment
+            let mut envp: Vec<std::ffi::CString> = Vec::new();
+            for (k, v) in &merged_env {
                 let entry = format!("{}={}", k, v);
                 envp.push(std::ffi::CString::new(entry).unwrap());
             }
-            // Ensure PATH is set
-            if !request.env.contains_key("PATH") {
+            // Ensure PATH is set (fallback if not in merged_env)
+            if !merged_env.contains_key("PATH") {
                 envp.push(std::ffi::CString::new("PATH=/usr/bin:/bin:/usr/sbin:/sbin").unwrap());
             }
-            // Ensure HOME is set
-            if !request.env.contains_key("HOME") {
+            // Ensure HOME is set (fallback if not in merged_env)
+            if !merged_env.contains_key("HOME") {
                 let home = if let Some((uid, _)) = uid_gid {
                     if uid == 0 { "/root".to_string() } else { format!("/home/{}", uid) }
                 } else { "/root".to_string() };

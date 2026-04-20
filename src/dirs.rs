@@ -508,7 +508,7 @@ pub fn get_home() -> Result<String> {
         }
     }
 
-    // EPKG_USER: host username for VM guest path computation
+    // EPKG_USER: host username for VM guest path computation (fallback when EPKG_HOME not set)
     // Build host-style home path: /home/$EPKG_USER (Linux) or /Users/$EPKG_USER (macOS)
     #[cfg(unix)]
     if let Ok(user) = env::var("EPKG_USER") {

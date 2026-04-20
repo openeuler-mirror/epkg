@@ -185,6 +185,19 @@ pub fn init_logging_early() {
             std::env::set_var("RUST_BACKTRACE", "1");
         }
     }
+
+    // Set environment variables from kernel cmdline (epkg.var.XXX=yyy -> XXX=yyy)
+    // This is a general mechanism for passing env vars to guest early in init.
+    // Most env vars can also be passed later via JSON protocol in guest_daemon.rs,
+    // but some need to be set early (e.g., EPKG_HOST_OS for path computation).
+    for (k, v) in CMDLINE.get_or_init(parse_cmdline).iter() {
+        if let Some(var_name) = k.strip_prefix("epkg.var.") {
+            let decoded = percent_decode(v);
+            std::env::set_var(var_name, &decoded);
+            write_msg(&mut console, &mut kmsg, &format!("init: {}={}\n", var_name, decoded), debug);
+        }
+    }
+
     write_msg(&mut console, &mut kmsg, "init: init_logging_early() complete\n", debug);
 }
 
