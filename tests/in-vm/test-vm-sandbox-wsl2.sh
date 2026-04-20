@@ -155,12 +155,51 @@ setup_windows_env() {
     echo "  Kernel: $EPKG_VM_KERNEL"
 }
 
-# Cleanup - nothing to clean since we didn't copy anything
+# Cleanup test artifacts (VM session, processes, environment)
 cleanup_windows_env() {
-    :  # No cleanup needed - we use existing files
+    log "Cleaning up test artifacts..."
+
+    # Forcefully kill ALL epkg, cmd, and VM related processes using taskkill
+    # This is more reliable than PowerShell Stop-Process
+    taskkill.exe /F /IM epkg.exe 2>/dev/null || true
+    taskkill.exe /F /IM cmd.exe 2>/dev/null || true
+    taskkill.exe /F /IM libkrun.exe 2>/dev/null || true
+    taskkill.exe /F /FI "IMAGENAME eq qemu-system*.exe" 2>/dev/null || true
+
+    # Also kill via PowerShell for processes with matching path
+    powershell.exe -Command "Get-Process | Where-Object { \$_.Path -like '*epkg*' -or \$_.Name -like '*krun*' } | Stop-Process -Force -ErrorAction SilentlyContinue" 2>/dev/null || true
+
+    # Wait for processes to fully terminate and release file locks
+    sleep 5
+
+    # Remove VM session file
+    rm -f "/mnt/c/Users/${WIN_USER}/.epkg/run/vm-sessions/${ENV_NAME}.json" 2>/dev/null || true
+
+    # Build Windows path for test environment
+    WIN_ENV_PATH="C:/Users/${WIN_USER}/.epkg/envs/${ENV_NAME}"
+    WSL_ENV_PATH="/mnt/c/Users/${WIN_USER}/.epkg/envs/${ENV_NAME}"
+
+    # Remove test environment with retries
+    for attempt in 1 2 3 4 5; do
+        # Try Remove-Item using pre-built path (avoids bash escaping issues)
+        powershell.exe -Command "Remove-Item -Recurse -Force '$WIN_ENV_PATH'" 2>/dev/null || true
+        # Force drvfs cache refresh by listing parent directory
+        ls "$(dirname "$WSL_ENV_PATH")" >/dev/null 2>&1 || true
+        # Verify removal from WSL side
+        if [ ! -d "$WSL_ENV_PATH" ]; then
+            log "Cleanup completed successfully"
+            return 0
+        fi
+        log "Cleanup attempt $attempt failed, retrying..."
+        # Kill processes again before retry
+        taskkill.exe /F /IM epkg.exe 2>/dev/null || true
+        taskkill.exe /F /IM cmd.exe 2>/dev/null || true
+        sleep 2
+    done
+    log "Warning: cleanup may not have fully completed"
 }
 
-trap cleanup_windows_env EXIT INT HUP
+trap cleanup_windows_env EXIT INT HUP TERM
 
 log() {
     printf "%b[TEST]%b %b\n" "$GREEN" "$NC" "$*" >&2
@@ -324,8 +363,14 @@ log "Isolate options: $ISOLATE_OPTS"
 cleanup_previous_test() {
     log "Cleaning up previous test artifacts..."
 
+    # Build Windows paths (avoid bash escaping issues)
+    WIN_ENV_PATH="C:/Users/${WIN_USER}/.epkg/envs/${ENV_NAME}"
+    WSL_ENV_PATH="/mnt/c/Users/${WIN_USER}/.epkg/envs/${ENV_NAME}"
+
     # Kill any running epkg processes that might hold file locks
     powershell.exe -Command "Get-Process | Where-Object { \$_.Path -like '*epkg*' } | Stop-Process -Force -ErrorAction SilentlyContinue" 2>/dev/null || true
+    taskkill.exe /F /IM epkg.exe 2>/dev/null || true
+    taskkill.exe /F /IM cmd.exe 2>/dev/null || true
 
     # Remove VM session file if exists
     rm -f "/mnt/c/Users/${WIN_USER}/.epkg/run/vm-sessions/${ENV_NAME}.json" 2>/dev/null || true
@@ -334,7 +379,9 @@ cleanup_previous_test() {
     sleep 2
 
     # Remove environment directory if exists
-    powershell.exe -Command "Remove-Item -Recurse -Force 'C:\Users\${WIN_USER}\.epkg\envs\${ENV_NAME}' -ErrorAction SilentlyContinue" 2>/dev/null || true
+    powershell.exe -Command "Remove-Item -Recurse -Force '$WIN_ENV_PATH' -ErrorAction SilentlyContinue" 2>/dev/null || true
+    # Refresh drvfs cache
+    ls "$(dirname "$WSL_ENV_PATH")" >/dev/null 2>&1 || true
 }
 
 cleanup_previous_test
