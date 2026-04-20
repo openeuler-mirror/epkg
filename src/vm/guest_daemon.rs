@@ -367,6 +367,10 @@ struct CommandRequest {
     /// When omitted with `reuse_vm`, [`VM_REUSE_IDLE_TIMEOUT_MS`] is used.
     #[serde(default)]
     vm_keep_timeout_secs: Option<u32>,
+    /// Host Unix timestamp in nanoseconds for guest clock synchronization.
+    /// VM guest clocks often start at wrong values (e.g., epoch or 1999).
+    #[serde(default)]
+    host_time: Option<u64>,
     #[serde(default)]
     command: Vec<String>,
     #[serde(default)]
@@ -392,6 +396,34 @@ enum ConnectionDisposition {
     Shutdown,
     /// Keep listening for another command; poll interval before idle shutdown.
     ReuseWait { idle_timeout_ms: u32 },
+}
+
+/// Synchronize guest clock with host time using clock_settime(CLOCK_REALTIME).
+/// VM guest clocks often start at wrong values (e.g., epoch or 1999), causing
+/// files to appear "in the future" and triggering unnecessary refresh attempts.
+fn sync_guest_clock(host_time_ns: u64) {
+    use libc::{clock_settime, CLOCK_REALTIME, timespec};
+
+    // Convert nanoseconds to seconds and nanoseconds
+    let secs = (host_time_ns / 1_000_000_000) as i64;
+    let nsecs = (host_time_ns % 1_000_000_000) as i64;
+
+    let ts = timespec {
+        tv_sec: secs,
+        tv_nsec: nsecs,
+    };
+
+    // We need CAP_SYS_TIME to set the clock. In VM guest we run as root,
+    // but may not have this capability. Try anyway and log the result.
+    let result = unsafe { clock_settime(CLOCK_REALTIME, &ts) };
+    if result == 0 {
+        log::debug!("vm-daemon: synchronized guest clock to host time {} seconds", secs);
+        let _ = kmsg_write(&format!("<6>vm-daemon: clock synced to {} epoch seconds\n", secs));
+    } else {
+        let errno = std::io::Error::last_os_error();
+        log::debug!("vm-daemon: clock_settime failed: {} (may lack CAP_SYS_TIME)", errno);
+        let _ = kmsg_write(&format!("<4>vm-daemon: clock_settime failed: {}\n", errno));
+    }
 }
 
 fn resolve_request_user(user: Option<&str>) -> Result<Option<(u32, u32)>> {
@@ -1629,6 +1661,11 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                         };
                         log::debug!("[vm_daemon] Command received: {:?}", request.command);
                         debug_file_write(&format!("handle_connection: parsed command: {:?}, batch={}\n", request.command, request.batch));
+
+                        // Synchronize guest clock with host time if provided
+                        if let Some(host_time_ns) = request.host_time {
+                            sync_guest_clock(host_time_ns);
+                        }
 
                         if request.command.len() == 1 && request.command[0] == VM_SESSION_DONE_CMD {
                             log::debug!(

@@ -139,6 +139,13 @@ pub(crate) fn build_command_request(
         log::debug!("build_command_request: adding cwd={}", dir);
         m.insert("cwd".to_string(), serde_json::Value::String(dir.to_string()));
     }
+    // Pass host time for guest clock synchronization
+    // VM guest clocks often start at wrong values (e.g., epoch or 1999)
+    let host_time_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    m.insert("host_time".to_string(), serde_json::Value::Number(host_time_ns.into()));
     serde_json::Value::Object(m)
 }
 

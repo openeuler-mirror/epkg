@@ -240,6 +240,15 @@ pub fn build_command_request(
             request.insert("vm_keep_timeout_secs".to_string(), serde_json::Value::Number(secs.into()));
         }
     }
+
+    // Pass host time for guest clock synchronization
+    // VM guest clocks often start at wrong values (e.g., epoch or 1999)
+    let host_time_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    request.insert("host_time".to_string(), serde_json::Value::Number(host_time_ns.into()));
+
     request
 }
 
