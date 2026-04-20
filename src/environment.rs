@@ -1188,7 +1188,8 @@ fn setup_environment_paths(env_base: &Path) -> Result<(PathBuf, PackageFormat)> 
 
     // Step 2: Determine env_root (brew may use HOMEBREW_PREFIX)
     let env_root = if !config().common.env_root.is_empty() {
-        PathBuf::from(&config().common.env_root)
+        // Normalize path separators on Windows to handle paths from VM guest
+        crate::lfs::normalize_path_separators(&PathBuf::from(&config().common.env_root))
     } else if pkg_format == PackageFormat::Brew {
         try_use_homebrew_prefix()?.unwrap_or(env_base.to_path_buf())
     } else {
