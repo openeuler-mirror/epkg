@@ -2025,7 +2025,35 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
     }
 
     // Check /etc/epkg/env.yaml for VM guest execution (virtiofs root = env_root)
-    // Skip if -e was explicit with a DIFFERENT env_name (user wants different env).
+    // When -e NAME is explicit, check if it matches the VM guest environment.
+    // If it matches, set in_env_root=true so that "/" is used as env_root instead
+    // of the Windows path from env.yaml (which doesn't work in Linux VM guest).
+    #[cfg(target_os = "linux")]
+    if config.common.env_name_explicit && !config.common.env_name.is_empty() {
+        let root_env_yaml = env_root_env_yaml(Path::new("/"));
+        if root_env_yaml.exists() {
+            // Load env.yaml from "/" to check the VM guest environment name
+            if let Ok(root_env_config) = read_yaml_file::<EnvConfig>(&root_env_yaml) {
+                if config.common.env_name == root_env_config.name {
+                    // -e NAME matches the VM guest environment
+                    // Set in_env_root=true and env_root="/" so all paths resolve correctly
+                    config.common.in_env_root = true;
+                    config.common.env_root = "/".to_string();
+                    // Update ENV_CONFIG with the corrected env_root
+                    let env_config = models::EnvConfig {
+                        name:     root_env_config.name.clone(),
+                        env_root: "/".to_string(),
+                        env_base: "/".to_string(),
+                        ..Default::default()
+                    };
+                    let _ = set_env_config(env_config);
+                    log::debug!("env: -e {} matches VM guest env, setting in_env_root=true", config.common.env_name);
+                    return Ok(());
+                }
+            }
+        }
+    }
+    // Try auto-detection from /etc/epkg/env.yaml if -e was not explicit or empty
     if !config.common.env_name_explicit || config.common.env_name.is_empty() {
         if try_detect_environment_from_env_yaml(config)? {
             return Ok(());

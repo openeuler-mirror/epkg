@@ -1202,9 +1202,10 @@ pub use win32_pua_paths::{
     sanitize_path_for_windows,
 };
 
-/// Normalize path separators for Windows.
-/// Converts forward slashes to backslashes to avoid mixed separators.
-/// This is needed when joining Windows paths with Unix-style relative paths.
+/// Normalize path separators for cross-platform compatibility.
+/// Converts forward slashes to backslashes on Windows, and backslashes to
+/// forward slashes on Unix. This handles paths from env.yaml that may have
+/// been created on a different platform (e.g. Windows paths used in Linux VM guest).
 #[cfg(windows)]
 pub fn normalize_path_separators(path: &Path) -> PathBuf {
     let path_str = path.to_string_lossy();
@@ -1213,7 +1214,10 @@ pub fn normalize_path_separators(path: &Path) -> PathBuf {
 
 #[cfg(not(windows))]
 pub fn normalize_path_separators(path: &Path) -> PathBuf {
-    path.to_path_buf()
+    let path_str = path.to_string_lossy();
+    // Convert Windows backslashes to forward slashes for Unix compatibility
+    // This handles Windows paths from env.yaml when running in Linux VM guest
+    PathBuf::from(path_str.replace('\\', "/"))
 }
 
 /// Normalize path by resolving `.` and `..` components.
