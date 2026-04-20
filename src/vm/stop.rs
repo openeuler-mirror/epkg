@@ -38,6 +38,20 @@ pub fn cmd_vm_stop(_args: &ArgMatches) -> Result<()> {
         let _ = kill(pid, Signal::SIGTERM);
     }
 
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, false, session.daemon_pid);
+            if let Ok(h) = handle {
+                let _ = TerminateProcess(h, 1);
+                let _ = CloseHandle(h);
+            }
+        }
+    }
+
     // Wait for daemon process to exit (up to 500ms)
     // We need to ensure the daemon exits before cleaning up session files
     // to avoid leaving orphan processes or race conditions with new VM starts
@@ -56,6 +70,22 @@ pub fn cmd_vm_stop(_args: &ArgMatches) -> Result<()> {
         let pid = nix::unistd::Pid::from_raw(session.daemon_pid as i32);
         let _ = kill(pid, Signal::SIGKILL);
         // Brief wait for SIGKILL to take effect
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    #[cfg(windows)]
+    if is_process_alive(session.daemon_pid) {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, false, session.daemon_pid);
+            if let Ok(h) = handle {
+                let _ = TerminateProcess(h, 1);
+                let _ = CloseHandle(h);
+            }
+        }
+        // Brief wait for termination to take effect
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 

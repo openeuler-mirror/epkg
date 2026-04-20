@@ -149,17 +149,17 @@ fn vm_start_unix(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()
 fn vm_start_windows(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()> {
     use std::os::windows::process::CommandExt;
 
-    // Write pending file for child process to detect
+    // Write pending file for child process to detect BEFORE spawning
+    // This prevents recursion - child checks pending file and runs keeper directly
     write_pending_config(env_name, &config)?;
 
     let exe = std::env::current_exe()?;
-    let env_root_str = env_root.display().to_string();
 
     // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     const DETACHED_FLAGS: u32 = 0x00000008 | 0x00000200;
 
     std::process::Command::new(&exe)
-        .args(["vm", "start", &env_root_str])
+        .args(["vm", "start", env_name])
         .creation_flags(DETACHED_FLAGS)
         .spawn()?;
 
