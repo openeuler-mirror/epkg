@@ -797,51 +797,73 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
     // to set up a writable temp location (e.g., /tmp) for operations that need it.
     // The key is to ensure downloads and cache writes work for the typical case
     // (host non-root, guest root) which is the default VM behavior.
-    #[cfg(unix)]
-    let is_host_root = run_options.host_uid.map_or(false, |uid| uid == 0);
-    #[cfg(not(unix))]
-    let is_host_root = false;
 
-    // Check if guest will run as root (no -u or -u root)
-    let is_guest_root = run_options.user.as_ref().map_or(true, |u| u == "root" || u == "0");
+    // On Windows, we need special handling for virtiofs mounts.
+    // env.yaml stores DOS paths like C:\Users\aa\.epkg\envs\alpine
+    // These convert to /mnt/c/Users/aa/.epkg/envs/alpine in Linux guest.
+    // We must mount home_epkg to the converted path, NOT to /root/.epkg or /opt/epkg,
+    // so that env.yaml paths are valid in the guest.
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows, always mount to the converted Linux guest path
+        // This ensures env.yaml DOS paths work after conversion
+        try_add_mount(&dirs().epkg_store, None, true, true);
+        try_add_mount(&dirs().home_epkg, None, false, true);  // Mount to /mnt/c/Users/... (converted path)
+        try_add_mount(&dirs().home_cache, None, false, true);
+        // Don't mount opt_epkg on Windows - paths are under home_epkg
+    }
 
-    if is_host_root {
-        // For host root: mount to same path in guest (host path = guest path)
-        // Mount store directory for symlinks in cross-filesystem environments.
-        // Symlinks in temp directories point to store, so VM needs access at the original path.
-        try_add_mount(&dirs().epkg_store, None, true, true);
-        try_add_mount(&dirs().home_epkg, None, false, true);
-        try_add_mount(&dirs().home_cache, None, false, true);
-        try_add_mount(&dirs().opt_epkg, None, false, true);
-    } else if is_guest_root {
-        // For non-root host + root guest: align mount with host's shared_store setting.
-        //
-        // Host non-root always has shared_store=false (can't write to /opt/epkg).
-        // To make guest's determine_shared_store() return correct value, mount to
-        // /root/.epkg so guest sees private layout.
-        //
-        // Guest root's determine_shared_store() checks:
-        // 1. is_root -> true (guest is root)
-        // 2. /opt/epkg/envs exists? -> false (we mount to /root/.epkg)
-        // 3. $HOME/.epkg/envs exists? -> true (we mount home_epkg to /root/.epkg)
-        // So returns false (private) correctly.
-        //
-        // self env is then at user_envs/self = /root/.epkg/envs/self which exists.
-        // store is at /root/.epkg/store (mounted as part of home_epkg).
-        // Also mount store at original path for symlink resolution.
-        try_add_mount(&dirs().epkg_store, None, true, true);
-        try_add_mount(&dirs().home_epkg, Some(Path::new("/root/.epkg")), false, true);
-        // Mount cache separately since home_cache is outside home_epkg on macOS
-        try_add_mount(&dirs().home_cache, Some(Path::new("/root/.cache")), false, true);
-    } else {
-        // For non-root host + non-root guest: mount to same paths
-        // The guest user will have the same UID as the host user (via virtiofs
-        // passthrough), so they can access their own files
-        // Mount store for symlink resolution in cross-filesystem environments
-        try_add_mount(&dirs().epkg_store, None, true, true);
-        try_add_mount(&dirs().home_epkg, None, false, true);
-        try_add_mount(&dirs().home_cache, None, false, true);
-        // Don't mount host /opt/epkg - not writable by non-root user
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[cfg(unix)]
+        let is_host_root = run_options.host_uid.map_or(false, |uid| uid == 0);
+        #[cfg(not(unix))]
+        let is_host_root = false;
+
+        #[cfg(unix)]
+        let is_guest_root = run_options.user.as_ref().map_or(true, |u| u == "root" || u == "0");
+        #[cfg(not(unix))]
+        let is_guest_root = true;
+
+        if is_host_root {
+            // For host root: mount to same path in guest (host path = guest path)
+            // Mount store directory for symlinks in cross-filesystem environments.
+            // Symlinks in temp directories point to store, so VM needs access at the original path.
+            try_add_mount(&dirs().epkg_store, None, true, true);
+            try_add_mount(&dirs().home_epkg, None, false, true);
+            try_add_mount(&dirs().home_cache, None, false, true);
+            #[cfg(unix)]
+            try_add_mount(&dirs().opt_epkg, None, false, true);
+        } else if is_guest_root {
+            // For non-root host + root guest: align mount with host's shared_store setting.
+            //
+            // Host non-root always has shared_store=false (can't write to /opt/epkg).
+            // To make guest's determine_shared_store() return correct value, mount to
+            // /root/.epkg so guest sees private layout.
+            //
+            // Guest root's determine_shared_store() checks:
+            // 1. is_root -> true (guest is root)
+            // 2. /opt/epkg/envs exists? -> false (we mount to /root/.epkg)
+            // 3. $HOME/.epkg/envs exists? -> true (we mount home_epkg to /root/.epkg)
+            // So returns false (private) correctly.
+            //
+            // self env is then at user_envs/self = /root/.epkg/envs/self which exists.
+            // store is at /root/.epkg/store (mounted as part of home_epkg).
+            // Also mount store at original path for symlink resolution.
+            try_add_mount(&dirs().epkg_store, None, true, true);
+            try_add_mount(&dirs().home_epkg, Some(Path::new("/root/.epkg")), false, true);
+            // Mount cache separately since home_cache is outside home_epkg on macOS
+            try_add_mount(&dirs().home_cache, Some(Path::new("/root/.cache")), false, true);
+        } else {
+            // For non-root host + non-root guest: mount to same paths
+            // The guest user will have the same UID as the host user (via virtiofs
+            // passthrough), so they can access their own files
+            // Mount store for symlink resolution in cross-filesystem environments
+            try_add_mount(&dirs().epkg_store, None, true, true);
+            try_add_mount(&dirs().home_epkg, None, false, true);
+            try_add_mount(&dirs().home_cache, None, false, true);
+            // Don't mount host /opt/epkg - not writable by non-root user
+        }
     }
 
     // Mount current working directory if not chdir_to_env_root
