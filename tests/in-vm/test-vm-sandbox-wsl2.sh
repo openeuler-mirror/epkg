@@ -176,6 +176,12 @@ error() {
     exit 1
 }
 
+# Print output safely (avoid printf interpreting escape sequences)
+print_output() {
+    # Use echo -e or cat to avoid printf interpreting ANSI escapes from Windows output
+    echo "$1" >&2
+}
+
 skip() {
     printf "%b[SKIP]%b %b\n" "$YELLOW" "$NC" "$*" >&2
     exit 0
@@ -263,7 +269,8 @@ capture_with_timeout() {
             error "Command timed out after ${timeout_secs}s"
             ;;
         *)
-            error "Command failed with exit code $exit_code: $output"
+            echo "$output" >&2
+            error "Command failed with exit code $exit_code"
             ;;
     esac
 
@@ -321,13 +328,15 @@ output=$(capture_with_timeout env create "$ENV_NAME" -c alpine)
 if ! echo "$output" | grep -qi "created\|success"; then
     # Check if it was actually created despite output
     if ! run_epkg_cmd "env list" | grep -q "$ENV_NAME"; then
-        error "Failed to create sandbox env: $output"
+        echo "$output" >&2
+        error "Failed to create sandbox env"
     fi
 fi
 
 log "Installing bash coreutils into $ENV_NAME"
 output=$(capture_with_timeout 120 -e "$ENV_NAME" --assume-yes install bash coreutils) || {
-    error "Failed to install coreutils in sandbox env: $output"
+    echo "$output" >&2
+    error "Failed to install coreutils in sandbox env"
 }
 
 # Ensure /etc/passwd has root so whoami prints "root" in the VM
