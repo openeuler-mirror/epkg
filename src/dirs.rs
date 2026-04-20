@@ -25,6 +25,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use crate::models::*;
 use crate::repo::RepoRevise;
+use crate::lfs;
 #[cfg(unix)]
 use crate::utils;
 #[cfg(unix)]
@@ -294,13 +295,15 @@ pub fn get_env_root(env_name: String) -> Result<PathBuf> {
             // env_name matches but env_root not set - load from env_name
             // This handles -e flag where only env_name was set
             let env_config = crate::io::deserialize_env_config_for(env_name)?;
-            Ok(PathBuf::from(&env_config.env_root))
+            // Normalize path separators on Windows to handle paths from VM guest
+            Ok(lfs::normalize_path_separators(&PathBuf::from(&env_config.env_root)))
         }
     } else {
         // Load from config file
         // With path-consistency mount, stored paths are valid in both host and guest
         let env_config = crate::io::deserialize_env_config_for(env_name)?;
-        Ok(PathBuf::from(&env_config.env_root))
+        // Normalize path separators on Windows to handle paths from VM guest
+        Ok(lfs::normalize_path_separators(&PathBuf::from(&env_config.env_root)))
     }
 }
 

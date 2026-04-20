@@ -1735,7 +1735,8 @@ pub fn export_environment(output: Option<String>) -> Result<()> {
     };
 
     // Get installed packages and world files
-    let env_root = PathBuf::from(&env_export.env.env_root);
+    // Normalize path separators on Windows to handle paths from VM guest
+    let env_root = lfs::normalize_path_separators(&PathBuf::from(&env_export.env.env_root));
 
     // Add channel configs
     collect_files_for_export(&mut env_export.files, &env_root, "etc/epkg/channel.yaml")?;
@@ -2034,7 +2035,8 @@ pub fn find_command_in_registered_envs(cmd_name: &str, shared_store: bool) -> Re
     for env_cfg in configs {
         // Use env_root directly from EnvConfig instead of calling get_env_root()
         // which would cause deadlock by calling config() during initialization
-        let env_root = PathBuf::from(&env_cfg.env_root);
+        // Normalize path separators on Windows to handle paths from VM guest
+        let env_root = lfs::normalize_path_separators(&PathBuf::from(&env_cfg.env_root));
         for bin_dir in &bin_dirs {
             #[cfg(windows)]
             let bin_path = PathBuf::from(bin_dir.replace('/', "\\"));

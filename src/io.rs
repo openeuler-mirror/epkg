@@ -365,7 +365,9 @@ pub fn interpolate_channel_urls(cc: &mut ChannelConfig) {
 pub fn deserialize_channel_config() -> Result<Vec<ChannelConfig>> {
     let env_config = models::env_config();
     log::debug!("deserialize_channel_config: env_root={}", env_config.env_root);
-    let env_root = PathBuf::from(&env_config.env_root);
+    // Normalize path separators on Windows to avoid mixed separators when env_root
+    // was created in VM guest (Linux) and stored with Unix-style separators.
+    let env_root = lfs::normalize_path_separators(&PathBuf::from(&env_config.env_root));
     deserialize_channel_config_from_root(&env_root)
 }
 
