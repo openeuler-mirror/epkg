@@ -290,6 +290,14 @@ Total Wall Time: ~1.4s
     - rw: 400-3500μs (Reader/Writer memory mapping)
     - add: 700-4300μs (used ring update)
     - Total ~2ms per READ operation (inherent cost)
+14. **MAX_BUFFER_SIZE optimization**: Increased FUSE buffer size
+    - Changed from 1MB to 4MB (default)
+    - Reduces number of READ operations, lowering virtio overhead
+    - Configurable via EPKG_VIRTIOFS_MAX_BUFFER_SIZE env var
+15. **File cache expansion**: Increased cache size and selective invalidation
+    - Cache size: 128 → 512 entries (default)
+    - Selective invalidation preserves other cached handles on modification
+    - Configurable via EPKG_VIRTIOFS_FILE_CACHE_SIZE env var
 
 ## Future Optimization Opportunities
 
@@ -301,11 +309,29 @@ Total Wall Time: ~1.4s
    - Inherent virtio/FUSE protocol overhead
    - Difficult to optimize without architecture changes
    - Consider: larger READ sizes, batching, DAX mapping
+   - **IMPLEMENTED**: MAX_BUFFER_SIZE increased to 4MB (default)
 
 3. **OPEN optimization**: 14% of total time
    - Windows kernel bottleneck, limited optimization potential
    - Consider: file handle pooling, aggressive caching
+   - **IMPLEMENTED**: File cache increased to 512 entries with selective invalidation
 
 4. **Virtiofs cache warming**: Pre-cache frequently used files
 
 5. **Init binary optimization**: Further reduce size or use compressed init
+
+## Performance Tuning via Environment Variables
+
+### EPKG_VIRTIOFS_MAX_BUFFER_SIZE
+- Default: 4194304 (4MB)
+- Description: Maximum buffer size for FUSE READ/WRITE operations
+- Larger values reduce virtio queue overhead per operation
+- Recommended range: 1MB-8MB
+- Example: `EPKG_VIRTIOFS_MAX_BUFFER_SIZE=4194304`
+
+### EPKG_VIRTIOFS_FILE_CACHE_SIZE
+- Default: 512
+- Description: Number of file handles cached in virtiofs passthrough layer
+- Larger values reduce OPEN operations but increase memory usage
+- Recommended range: 256-1024
+- Example: `EPKG_VIRTIOFS_FILE_CACHE_SIZE=512`
