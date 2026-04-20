@@ -417,6 +417,76 @@ else
     test_failed 3 "Expected 'test content', got '$output'"
 fi
 
+# ============================================
+# Test Suite: virtiofs DAX file I/O (various sizes)
+# ============================================
+# These tests verify DAX SETUPMAPPING works for files of various sizes.
+# Critical cases: files where page-rounded size > actual file content size.
+
+# Test DAX-1: Small file (< 1KB) - /etc/hosts
+log "Test DAX-1: Reading small file /etc/hosts (~200 bytes)"
+output=$(capture_with_timeout -e "$ENV_NAME" run $ISOLATE_OPTS --io=batch busybox head /etc/hosts)
+if echo "$output" | grep -q "127.0.0.1"; then
+    test_passed DAX-1
+else
+    test_failed DAX-1 "Expected '127.0.0.1' in /etc/hosts, got '$output'"
+fi
+
+# Test DAX-2: Near page boundary file - /etc/inputrc (~1748 bytes in Alpine)
+# This triggers VirtualAlloc: 1748 rounded to 4096 > 1748
+log "Test DAX-2: Reading near-page-boundary file /etc/inputrc (~1748 bytes)"
+output=$(capture_with_timeout -e "$ENV_NAME" run $ISOLATE_OPTS --io=batch busybox head /etc/inputrc)
+if echo "$output" | grep -q "inputrc"; then
+    test_passed DAX-2
+else
+    test_failed DAX-2 "Expected 'inputrc' in /etc/inputrc, got '$output'"
+fi
+
+# Test DAX-3: Medium file - yash initialization (11859 bytes in Alpine)
+# This triggers VirtualAlloc: 11859 rounded to 12288 > 11859
+log "Test DAX-3: Reading medium file yash initialization (~11859 bytes)"
+output=$(capture_with_timeout -e "$ENV_NAME" run $ISOLATE_OPTS --io=batch busybox head /usr/share/yash/initialization/common)
+if echo "$output" | grep -q "Yashrc"; then
+    test_passed DAX-3
+else
+    test_failed DAX-3 "Expected 'Yashrc' in output, got '$output'"
+fi
+
+# Test DAX-4: Page-aligned file (4096 bytes) - should use file mapping
+log "Test DAX-4: Reading page-aligned test file (4096 bytes)"
+output=$(capture_with_timeout -e "$ENV_NAME" run $ISOLATE_OPTS --io=batch busybox sh -c '
+    busybox head -c 4096 /dev/urandom > /tmp/dax-4096.bin
+    busybox cat /tmp/dax-4096.bin | busybox wc -c
+')
+bytes=$(echo "$output" | grep -v '^\[' | grep -v '^$' | tail -1 | tr -d ' ')
+if [ "$bytes" = "4096" ]; then
+    test_passed DAX-4
+else
+    test_failed DAX-4 "Expected 4096 bytes, got '$bytes'"
+fi
+
+# Test DAX-5: Sub-page file (4094 bytes) - triggers VirtualAlloc
+log "Test DAX-5: Reading sub-page test file (4094 bytes)"
+output=$(capture_with_timeout -e "$ENV_NAME" run $ISOLATE_OPTS --io=batch busybox sh -c '
+    busybox head -c 4094 /dev/urandom > /tmp/dax-4094.bin
+    busybox cat /tmp/dax-4094.bin | busybox wc -c
+')
+bytes=$(echo "$output" | grep -v '^\[' | grep -v '^$' | tail -1 | tr -d ' ')
+if [ "$bytes" = "4094" ]; then
+    test_passed DAX-5
+else
+    test_failed DAX-5 "Expected 4094 bytes, got '$bytes'"
+fi
+
+# Test DAX-6: Large binary file - bash (~789KB)
+log "Test DAX-6: Reading large binary file bash (~789KB)"
+output=$(capture_with_timeout -e "$ENV_NAME" run $ISOLATE_OPTS --io=batch sh -c 'busybox head /bin/bash | busybox wc -c')
+if [ -n "$output" ]; then
+    test_passed DAX-6
+else
+    test_failed DAX-6 "Failed to read /bin/bash"
+fi
+
 # Test 4: Symlink handling (critical for epkg!)
 log "Test 4: Testing symlink creation and resolution"
 output=$(capture_with_timeout -e "$ENV_NAME" run $ISOLATE_OPTS --io=batch sh -c 'echo data > /tmp/sf && ln -sf /tmp/sf /tmp/sl && readlink /tmp/sl')

@@ -130,11 +130,11 @@ fi
 # Test 8: Create and read a file with exact page-aligned size (4096 bytes)
 log "Testing: page-aligned file (4096 bytes)"
 test_file="/tmp/dax-test-4096.txt"
-dd if=/dev/urandom of="$test_file" bs=4096 count=1 2>/dev/null
+busybox head -c 4096 /dev/urandom > "$test_file"
 if [ $? -ne 0 ]; then
 	error "Failed to create test file $test_file"
 fi
-bytes=$(busybox head "$test_file" 2>&1 | busybox wc -c)
+bytes=$(busybox cat "$test_file" 2>&1 | busybox wc -c)
 if [ $? -ne 0 ]; then
 	error "Failed to read page-aligned test file"
 fi
@@ -145,11 +145,11 @@ log "  OK: page-aligned file read successful"
 # Test 9: Create and read a file just below page size (4094 bytes)
 log "Testing: file just below page size (4094 bytes)"
 test_file="/tmp/dax-test-4094.txt"
-dd if=/dev/urandom of="$test_file" bs=4094 count=1 2>/dev/null
+busybox head -c 4094 /dev/urandom > "$test_file"
 if [ $? -ne 0 ]; then
 	error "Failed to create test file $test_file"
 fi
-bytes=$(busybox head "$test_file" 2>&1 | busybox wc -c)
+bytes=$(busybox cat "$test_file" 2>&1 | busybox wc -c)
 if [ $? -ne 0 ]; then
 	error "Failed to read sub-page test file"
 fi
