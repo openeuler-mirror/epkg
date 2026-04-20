@@ -17,11 +17,9 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 . "$PROJECT_ROOT/tests/common.sh"
 
 # Configuration
-VMM_BACKEND="libkrun"
 ENV_NAME="test-vm-sandbox-wsl2"
-TEMP_DIR=""
-WIN_TEMP_DIR=""
-EPKG_WIN_BINARY=""
+EPKG_BINARY=""
+EPKG_WIN_PATH=""
 
 # Default VMM backend for Windows
 VMM_BACKEND=""
@@ -86,17 +84,55 @@ export INTERACTIVE
 
 set_color_names
 
-# Find Windows native epkg binary
-find_windows_epkg_bin() {
-    if [ -n "$EPKG_BIN" ] && [ -f "$EPKG_BIN" ]; then
-        EPKG_BINARY="$EPKG_BIN"
-    elif [ -f "$PROJECT_ROOT/dist/epkg-windows-x86_64.exe" ]; then
-        EPKG_BINARY="$PROJECT_ROOT/dist/epkg-windows-x86_64.exe"
-    elif [ -f "$PROJECT_ROOT/target/debug/epkg.exe" ]; then
-        EPKG_BINARY="$PROJECT_ROOT/target/debug/epkg.exe"
-    else
-        error "Windows epkg.exe not found. Please build for Windows target or set EPKG_BIN"
+# Get Windows username (different from WSL username)
+get_windows_username() {
+    # Try cmd.exe first
+    local cmd="/mnt/c/Windows/System32/cmd.exe"
+    if [ -x "$cmd" ]; then
+        local out
+        out=$("$cmd" /c "echo %USERNAME%" 2>/dev/null || true)
+        local win_user
+        win_user=$(printf "%s" "$out" | grep -v "^$" | tail -1 | tr -d '\r')
+        if [ -n "$win_user" ]; then
+            echo "$win_user"
+            return 0
+        fi
     fi
+
+    # Fallback: try whoami.exe
+    local whoami="/mnt/c/Windows/System32/whoami.exe"
+    if [ -x "$whoami" ]; then
+        local out
+        out=$("$whoami" 2>/dev/null || true)
+        local win_user
+        win_user=$(printf "%s" "$out" | awk -F'\\' 'NF>=2 {u=$NF; gsub(/\r/, "", u); print u; exit}')
+        if [ -n "$win_user" ]; then
+            echo "$win_user"
+            return 0
+        fi
+    fi
+
+    # Last fallback: assume same as WSL USER
+    echo "$USER"
+}
+
+WIN_USER=$(get_windows_username)
+log "Windows user: $WIN_USER"
+
+# Find Windows native epkg binary - prioritize installed location
+find_windows_epkg_bin() {
+    # Priority 1: Installed epkg.exe in Windows user's .epkg directory
+    if [ -f "/mnt/c/Users/${WIN_USER}/.epkg/envs/self/usr/bin/epkg.exe" ]; then
+        EPKG_BINARY="/mnt/c/Users/${WIN_USER}/.epkg/envs/self/usr/bin/epkg.exe"
+        EPKG_WIN_PATH="C:/Users/${WIN_USER}/.epkg/envs/self/usr/bin/epkg.exe"
+    # Priority 2: EPKG_BIN env var override
+    elif [ -n "$EPKG_BIN" ] && [ -f "$EPKG_BIN" ]; then
+        EPKG_BINARY="$EPKG_BIN"
+        EPKG_WIN_PATH=$(wsl_to_windows_path "$EPKG_BIN")
+    else
+        error "Windows epkg.exe not found. Run 'epkg self install' on Windows or set EPKG_BIN"
+    fi
+    log "Using epkg.exe: $EPKG_WIN_PATH"
 }
 
 find_windows_epkg_bin
@@ -106,48 +142,22 @@ if [ ! -d "/mnt/c" ]; then
     error "This script is designed to run from WSL2 with Windows C: drive mounted at /mnt/c"
 fi
 
-# Setup Windows temp directory
+# Setup Windows test environment - use existing paths, no copying needed
 setup_windows_env() {
-    local pid=$$
-    TEMP_DIR="/mnt/c/temp_epkg_vm_test_${pid}"
-    WIN_TEMP_DIR="C:\\temp_epkg_vm_test_${pid}"
-
     echo "Setting up Windows test environment..."
-    echo "  Temp: $TEMP_DIR"
 
-    mkdir -p "$TEMP_DIR"
-
-    # Copy epkg binary to temp location
-    cp "$EPKG_BINARY" "$TEMP_DIR/epkg.exe"
-    EPKG_WIN_BINARY="$TEMP_DIR/epkg.exe"
-
-    # Also need vmlinux kernel
-    local kernel_src=""
-    if [ -f "$HOME/.epkg/envs/self/boot/vmlinux" ]; then
-        kernel_src="$HOME/.epkg/envs/self/boot/vmlinux"
-    elif [ -f "/opt/epkg/boot/vmlinux" ]; then
-        kernel_src="/opt/epkg/boot/vmlinux"
-    elif [ -f "/mnt/c/epkg/boot/vmlinux" ]; then
-        kernel_src="/mnt/c/epkg/boot/vmlinux"
-    elif [ -f "/mnt/c/Users/$(whoami)/.epkg/envs/self/boot/vmlinux" ]; then
-        kernel_src="/mnt/c/Users/$(whoami)/.epkg/envs/self/boot/vmlinux"
+    # Check kernel exists
+    if [ ! -f "/mnt/c/Users/${WIN_USER}/.epkg/envs/self/boot/kernel" ]; then
+        error "Kernel not found. Run 'epkg self install' on Windows first."
     fi
 
-    if [ -n "$kernel_src" ] && [ -f "$kernel_src" ]; then
-        mkdir -p "$TEMP_DIR/boot"
-        cp "$kernel_src" "$TEMP_DIR/boot/vmlinux"
-        echo "  Kernel: $kernel_src -> $TEMP_DIR/boot/vmlinux"
-    fi
-
-    export EPKG_VM_KERNEL="C:/temp_epkg_vm_test_${pid}/boot/vmlinux"
+    export EPKG_VM_KERNEL="C:/Users/${WIN_USER}/.epkg/envs/self/boot/kernel"
+    echo "  Kernel: $EPKG_VM_KERNEL"
 }
 
-# Cleanup Windows temp directory
+# Cleanup - nothing to clean since we didn't copy anything
 cleanup_windows_env() {
-    if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]; then
-        echo "Cleaning up temporary files..."
-        rm -rf "$TEMP_DIR"
-    fi
+    :  # No cleanup needed - we use existing files
 }
 
 trap cleanup_windows_env EXIT INT HUP
@@ -178,14 +188,10 @@ run_epkg_cmd() {
     local output
     local exit_code
 
-    # Build the Windows command
-    # Note: We need to escape backslashes and quotes for cmd.exe
-    local win_cmd="cd /d $WIN_TEMP_DIR && epkg.exe $cmd"
-
     log "Running: epkg.exe $cmd"
 
-    # Run via cmd.exe and capture output
-    output=$(cd /mnt/c && cmd.exe /c "$win_cmd" 2>&1) || exit_code=$?
+    # Run via cmd.exe with full path to epkg.exe
+    output=$(cd /mnt/c && cmd.exe /c "${EPKG_WIN_PATH} $cmd" 2>&1) || exit_code=$?
     exit_code=${exit_code:-0}
 
     # Convert CRLF to LF and strip carriage returns
@@ -203,12 +209,11 @@ run_with_timeout() {
 
     log "Running with timeout ${timeout_secs}s: epkg.exe $cmd"
 
-    # Use timeout command on the cmd.exe execution
-    local win_cmd="cd /d $WIN_TEMP_DIR && epkg.exe $cmd"
+    # Run via cmd.exe with full path to epkg.exe
     local output
     local exit_code=0
 
-    output=$(cd /mnt/c && timeout --foreground "$timeout_secs" cmd.exe /c "$win_cmd" 2>&1) || exit_code=$?
+    output=$(cd /mnt/c && timeout --foreground "$timeout_secs" cmd.exe /c "${EPKG_WIN_PATH} $cmd" 2>&1) || exit_code=$?
 
     # Convert CRLF to LF
     output=$(echo "$output" | tr -d '\r')
@@ -242,11 +247,10 @@ capture_with_timeout() {
 
     log "Running with timeout ${timeout_secs}s (capture): epkg.exe $cmd"
 
-    local win_cmd="cd /d $WIN_TEMP_DIR && epkg.exe $cmd"
     local output
     local exit_code=0
 
-    output=$(cd /mnt/c && timeout --foreground "$timeout_secs" cmd.exe /c "$win_cmd" 2>&1) || exit_code=$?
+    output=$(cd /mnt/c && timeout --foreground "$timeout_secs" cmd.exe /c "${EPKG_WIN_PATH} $cmd" 2>&1) || exit_code=$?
 
     # Convert CRLF to LF
     output=$(echo "$output" | tr -d '\r')
@@ -276,39 +280,6 @@ check_libkrun_requirements() {
     if ! echo "$help_output" | grep -q "isolate"; then
         skip "epkg run --isolate not available (libkrun feature not enabled)"
     fi
-
-    # Check for kernel
-    check_kernel_for_libkrun
-}
-
-# Check for kernel suitable for libkrun
-check_kernel_for_libkrun() {
-    # Check for default kernel locations
-    local default_kernel="$HOME/.epkg/envs/self/boot/vmlinux"
-
-    if [ -n "$EPKG_VM_KERNEL" ]; then
-        if [ ! -f "$EPKG_VM_KERNEL" ]; then
-            skip "EPKG_VM_KERNEL set but file not found: $EPKG_VM_KERNEL"
-        fi
-        log "Using kernel from EPKG_VM_KERNEL: $EPKG_VM_KERNEL"
-        export EPKG_VM_KERNEL
-        return 0
-    fi
-
-    if [ -f "$default_kernel" ]; then
-        export EPKG_VM_KERNEL="C:/temp_epkg_vm_test_$$/boot/vmlinux"
-        log "Using kernel: $default_kernel (copied to Windows temp)"
-        return 0
-    fi
-
-    # Check Windows path (via WSL mount)
-    if [ -f "/mnt/c/epkg/boot/vmlinux" ]; then
-        export EPKG_VM_KERNEL="C:/epkg/boot/vmlinux"
-        log "Using kernel: C:/epkg/boot/vmlinux"
-        return 0
-    fi
-
-    skip "No kernel found. Run 'epkg.exe self install' on Windows or set EPKG_VM_KERNEL"
 }
 
 # Auto-select VMM backend (Windows only supports libkrun)
