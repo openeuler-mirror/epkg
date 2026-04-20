@@ -596,6 +596,13 @@ fn build_libkrun_config(
         if let Ok(username) = std::env::var("USERNAME") {
             kernel_args.push_str(&format!(" epkg.var.EPKG_USER={}", percent_encode(&username)));
         }
+        // Pass cache path: Windows uses $HOME/.epkg/cache, not $HOME/.cache/epkg
+        // The virtiofs mount is at /mnt/c/Users/aa/.epkg/cache
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            let host_cache = format!("{}\\.epkg\\cache", home);
+            let guest_cache = windows_path_to_linux_guest(&host_cache);
+            kernel_args.push_str(&format!(" epkg.var.EPKG_CACHE={}", percent_encode(&guest_cache)));
+        }
     }
 
     #[cfg(target_os = "macos")]

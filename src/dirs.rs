@@ -91,11 +91,27 @@ impl EPKGDirs {
         let home = get_home()?;
         let home_epkg = PathBuf::from(&home).join(".epkg");
 
-        // macOS uses ~/Library/Caches/epkg, Linux uses ~/.cache/epkg
-        #[cfg(target_os = "macos")]
-        let home_cache = path_join(&PathBuf::from(&home), &["Library", "Caches", "epkg"]);
-        #[cfg(not(target_os = "macos"))]
-        let home_cache = path_join(&PathBuf::from(&home), &[".cache", "epkg"]);
+        // EPKG_CACHE: explicit cache directory for VM guest path consistency
+        // When set, guest uses the same cache path as host virtiofs mount.
+        #[cfg(unix)]
+        let home_cache = if let Ok(cache) = env::var("EPKG_CACHE") {
+            if !cache.is_empty() {
+                log::debug!("build_dirs: using EPKG_CACHE='{}'", cache);
+                PathBuf::from(cache)
+            } else {
+                // macOS uses ~/Library/Caches/epkg, Linux uses ~/.cache/epkg
+                #[cfg(target_os = "macos")]
+                { path_join(&PathBuf::from(&home), &["Library", "Caches", "epkg"]) }
+                #[cfg(not(target_os = "macos"))]
+                { path_join(&PathBuf::from(&home), &[".cache", "epkg"]) }
+            }
+        } else {
+            // macOS uses ~/Library/Caches/epkg, Linux uses ~/.cache/epkg
+            #[cfg(target_os = "macos")]
+            { path_join(&PathBuf::from(&home), &["Library", "Caches", "epkg"]) }
+            #[cfg(not(target_os = "macos"))]
+            { path_join(&PathBuf::from(&home), &[".cache", "epkg"]) }
+        };
 
         let (epkg_store, epkg_cache) = if options.init.shared_store {
             // Shared store/cache live under /opt/epkg
