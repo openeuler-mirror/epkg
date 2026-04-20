@@ -13,8 +13,7 @@ pub fn cmd_vm_stop(_args: &ArgMatches) -> Result<()> {
     let _env_root = if cfg.common.env_root.is_empty() {
         crate::dirs::get_env_root(env_name.clone())?
     } else {
-        // Normalize path separators on Windows to handle paths from VM guest
-        crate::lfs::normalize_path_separators(&std::path::PathBuf::from(&cfg.common.env_root))
+        std::path::PathBuf::from(&cfg.common.env_root)
     };
 
     // Check if VM is running

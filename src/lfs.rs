@@ -1220,6 +1220,62 @@ pub fn normalize_path_separators(path: &Path) -> PathBuf {
     PathBuf::from(path_str.replace('\\', "/"))
 }
 
+/// Convert Windows DOS-style path to Linux guest path format.
+/// This is used in Linux VM guest to convert env_root paths from env.yaml
+/// that were created on Windows host (e.g., "C:\Users\aa\.epkg\envs\alpine").
+/// The virtiofs mounts use /mnt/c/Users/... format for Windows drive letter paths.
+///
+/// Examples:
+///   C:\Users\aa\.epkg\envs\alpine -> /mnt/c/Users/aa/.epkg/envs/alpine
+///   \\wsl.localhost\Distro\path    -> /path (WSL path extraction)
+///   /home/user/.epkg/envs/myenv   -> unchanged (already Linux path)
+#[cfg(not(windows))]
+pub fn convert_dos_path_to_linux_guest(path: &Path) -> PathBuf {
+    let path_str = path.to_string_lossy();
+
+    // Handle WSL2 UNC paths: \\wsl.localhost\Distro\linux_path
+    if path_str.starts_with("\\\\wsl.localhost\\") || path_str.starts_with("\\\\wsl$\\") {
+        let parts: Vec<&str> = path_str.splitn(5, '\\').collect();
+        if parts.len() >= 5 {
+            let linux_path = parts[4].replace('\\', "/");
+            return PathBuf::from(format!("/{}", linux_path));
+        }
+        return PathBuf::from(path_str.replace('\\', "/"));
+    }
+
+    // Handle extended-length path prefix: \\?\C:\...
+    let path_stripped = if path_str.starts_with("\\\\?\\") {
+        &path_str[4..]
+    } else {
+        &path_str
+    };
+
+    // Handle DOS drive letter paths: C:\Users\...
+    // Check for pattern: single letter followed by colon
+    if path_stripped.len() >= 2 && path_stripped.chars().nth(1) == Some(':') {
+        let drive = path_stripped.chars().next().unwrap().to_ascii_lowercase();
+        let rest = &path_stripped[2..].replace('\\', "/");
+        // Strip leading '/' from rest if present to avoid double slash
+        let rest = rest.strip_prefix('/').unwrap_or(rest);
+        return PathBuf::from(format!("/mnt/{}/{}", drive, rest));
+    }
+
+    // Handle UNC paths without WSL prefix: \\server\share\...
+    if path_stripped.starts_with("\\\\") {
+        let rest = path_stripped[2..].replace('\\', "/");
+        return PathBuf::from(format!("/mnt/{}", rest));
+    }
+
+    // Not a Windows path - return unchanged
+    path.to_path_buf()
+}
+
+#[cfg(windows)]
+pub fn convert_dos_path_to_linux_guest(path: &Path) -> PathBuf {
+    // On Windows, no conversion needed
+    path.to_path_buf()
+}
+
 /// Normalize path by resolving `.` and `..` components.
 /// This is needed when comparing paths that may contain relative components.
 /// Unlike `canonicalize()`, this does NOT require the path to exist.

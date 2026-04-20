@@ -126,11 +126,17 @@ pub fn deserialize_env_config_for(env_name: String) -> Result<EnvConfig> {
         }
     };
 
-    // Note: EPKG_ENV_ROOT was removed because we now use path-consistency mount.
-    // Host ~/.epkg is mounted to guest at the same path (/home/$EPKG_USER/.epkg),
-    // so paths stored in env.yaml work in both host and guest without transformation.
+    // Convert DOS paths to Linux guest paths for VM guest execution.
+    // This handles Windows paths (C:\Users\...) stored in env.yaml when
+    // running in Linux VM guest where virtiofs mounts use /mnt/c/Users/...
+    let env_root = lfs::convert_dos_path_to_linux_guest(&PathBuf::from(&env_config.env_root));
+    let env_base = lfs::convert_dos_path_to_linux_guest(&PathBuf::from(&env_config.env_base));
 
-    Ok(env_config)
+    Ok(EnvConfig {
+        env_root: env_root.to_string_lossy().to_string(),
+        env_base: env_base.to_string_lossy().to_string(),
+        ..env_config
+    })
 }
 
 /// Get environment configuration (simplified API)
@@ -365,9 +371,7 @@ pub fn interpolate_channel_urls(cc: &mut ChannelConfig) {
 pub fn deserialize_channel_config() -> Result<Vec<ChannelConfig>> {
     let env_config = models::env_config();
     log::debug!("deserialize_channel_config: env_root={}", env_config.env_root);
-    // Normalize path separators on Windows to avoid mixed separators when env_root
-    // was created in VM guest (Linux) and stored with Unix-style separators.
-    let env_root = lfs::normalize_path_separators(&PathBuf::from(&env_config.env_root));
+    let env_root = PathBuf::from(&env_config.env_root);
     deserialize_channel_config_from_root(&env_root)
 }
 

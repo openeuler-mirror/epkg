@@ -120,8 +120,7 @@ fn get_registered_env_paths() -> Result<Vec<String>> {
     let shared_store = config().init.shared_store;
     let configs = registered_env_configs(shared_store);
     for config in configs {
-        // Normalize path separators on Windows to handle paths from VM guest
-        let env_root = lfs::normalize_path_separators(&PathBuf::from(&config.env_root));
+        let env_root = PathBuf::from(&config.env_root);
         let ebin_path = env_root.join("ebin");
         // Use exists_or_any_symlink which handles directories (unlike exists_in_env which is file-only)
         if !lfs::exists_or_any_symlink(&ebin_path) {
