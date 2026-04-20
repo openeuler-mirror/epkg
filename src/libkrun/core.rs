@@ -610,7 +610,7 @@ fn build_libkrun_config(
         kernel_args.push_str(" epkg.var.EPKG_HOST_OS=Darwin");
         // Pass host home directory
         if let Ok(home) = std::env::var("HOME") {
-            kernel_args.push_str(&format!(" epkg.var.EPKG_HOME={}", percent_encode(home)));
+            kernel_args.push_str(&format!(" epkg.var.EPKG_HOME={}", percent_encode(&home)));
         }
         // Pass host username
         if let Ok(username) = std::env::var("USER") {
