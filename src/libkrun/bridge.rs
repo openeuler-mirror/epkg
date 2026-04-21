@@ -9,6 +9,11 @@ use color_eyre::Result;
 use std::path::Path;
 use std::time::Duration;
 
+/// Default retry count for vsock bridge connection.
+/// With 5ms delay, 300 retries gives ~1.5 seconds total wait time,
+/// sufficient for VM startup and vsock pipe creation.
+pub const VSOCK_BRIDGE_MAX_RETRIES: u32 = 300;
+
 #[cfg(unix)]
 pub fn setup_vsock_ready_listener(env_hash: &str) -> Result<Option<std::os::unix::net::UnixListener>> {
     let run_dir = &crate::models::dirs().epkg_run;

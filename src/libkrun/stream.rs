@@ -535,7 +535,7 @@ pub fn send_command_via_vsock(
     crate::debug_epkg!("libkrun_stream: connecting to vsock bridge at {:?}", sock_path);
 
     crate::debug_epkg!("libkrun_stream: about to call connect_vsock_bridge");
-    let mut stream = super::bridge::connect_vsock_bridge(sock_path, 30)?;
+    let mut stream = super::bridge::connect_vsock_bridge(sock_path, super::bridge::VSOCK_BRIDGE_MAX_RETRIES)?;
     crate::debug_epkg!("libkrun_stream: connected to vsock bridge");
 
     // WaitNamedPipeA already ensures the named pipe is ready (guest has connected).

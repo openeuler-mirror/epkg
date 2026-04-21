@@ -1,6 +1,6 @@
 use std::ffi::CString;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::ptr;
 #[cfg(feature = "libkrun")]
 use std::sync::Mutex;
@@ -116,7 +116,7 @@ fn connect_to_existing_vm_socket(_env_root: &Path) -> Result<Option<(std::fs::Fi
         None => return Ok(None),
     };
 
-    let stream = super::bridge::connect_vsock_bridge(&info.socket_path, 5)?;
+    let stream = super::bridge::connect_vsock_bridge(&info.socket_path, super::bridge::VSOCK_BRIDGE_MAX_RETRIES)?;
     log::info!("libkrun: connected to existing VM pipe: {}", info.socket_path.display());
     Ok(Some((stream, info)))
 }
@@ -1827,14 +1827,14 @@ fn send_session_done_unix(sock_path: &Path) -> Result<()> {
     ))?;
     #[cfg(unix)]
     {
-        let mut stream = super::bridge::connect_vsock_bridge(sock_path, 30)?;
+        let mut stream = super::bridge::connect_vsock_bridge(sock_path, super::bridge::VSOCK_BRIDGE_MAX_RETRIES)?;
         stream.write_all(&req)?;
         stream.write_all(b"\n")?;
         stream.flush()?;
     }
     #[cfg(windows)]
     {
-        let mut stream = super::bridge::connect_vsock_bridge(sock_path, 30)?;
+        let mut stream = super::bridge::connect_vsock_bridge(sock_path, super::bridge::VSOCK_BRIDGE_MAX_RETRIES)?;
         stream.write_all(&req)?;
         stream.write_all(b"\n")?;
         stream.flush()?;

@@ -137,7 +137,7 @@ fn send_shutdown_to_guest(socket_path: &Path, _backend: &str) -> Result<()> {
     {
         use std::io::Write;
 
-        let mut stream = crate::libkrun::bridge::connect_vsock_bridge(socket_path, 5)?;
+        let mut stream = crate::libkrun::bridge::connect_vsock_bridge(socket_path, crate::libkrun::bridge::VSOCK_BRIDGE_MAX_RETRIES)?;
 
         // Build simple JSON request inline (client module is Linux-only)
         let request = serde_json::json!({
