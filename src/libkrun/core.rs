@@ -1,6 +1,6 @@
 use std::ffi::CString;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr;
 #[cfg(feature = "libkrun")]
 use std::sync::Mutex;
@@ -758,8 +758,9 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
     // Currently we use multiple virtiofs mounts on all platforms.
 
     let mut mounts = Vec::new();
-    // Track canonicalized paths to avoid duplicate mounts on same filesystem location
-    let mut seen_canonical: Vec<std::path::PathBuf> = Vec::new();
+    // Track (canonical_host_path, guest_path) pairs to avoid duplicate mounts.
+    // This allows same host path to be mounted to different guest paths.
+    let mut seen_mounts: Vec<(std::path::PathBuf, String)> = Vec::new();
 
     // Helper to add a mount if path is a directory and not already seen
     // guest_path defaults to host_path if not specified
@@ -783,9 +784,7 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
             }
         };
 
-        // Canonicalize to resolve symlinks and detect if this exact location is already mounted.
-        // We track canonical paths to avoid mounting the same filesystem location twice,
-        // but we do NOT skip subdirectories - they may need separate mounts for symlink resolution.
+        // Canonicalize to resolve symlinks
         let canonical = match host_path.canonicalize() {
             Ok(c) => c,
             Err(e) => {
@@ -794,14 +793,7 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
             }
         };
 
-        // Only skip if canonical path matches exactly (same filesystem location)
-        if seen_canonical.contains(&canonical) {
-            log::debug!("libkrun: skipping duplicate mount (same location): {}", host_path.display());
-            return;
-        }
-
-        // Generate a unique tag from the path
-        let tag = generate_virtiofs_tag(host_path);
+        // Determine guest path early to check for duplicates
         let guest = guest_path
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| {
@@ -817,10 +809,19 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
                     path_str.clone()
                 }
             });
+
+        // Skip if this exact (canonical, guest) mount is already done
+        if seen_mounts.iter().any(|(c, g)| c == &canonical && g == &guest) {
+            log::debug!("libkrun: skipping duplicate mount (same host+guest): {} -> {}", host_path.display(), guest);
+            return;
+        }
+
+        // Generate a unique tag from the path
+        let tag = generate_virtiofs_tag(host_path);
         log::debug!("libkrun: adding virtiofs mount: {} -> {} (guest: {}) ({})",
                    host_path.display(), tag, guest, if read_only { "ro" } else { "rw" });
-        mounts.push((tag, host_path.to_string_lossy().to_string(), guest, read_only));
-        seen_canonical.push(canonical);
+        mounts.push((tag, host_path.to_string_lossy().to_string(), guest.clone(), read_only));
+        seen_mounts.push((canonical, guest));
     };
 
     // Add user-provided mount specs FIRST, before automatic mounts.
@@ -884,6 +885,12 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
             try_add_mount(&dirs().home_cache, None, false, true);
             #[cfg(unix)]
             try_add_mount(&dirs().opt_epkg, None, false, true);
+            // Mount tool config for mirror acceleration at original host path.
+            // The tool wrapper uses EPKG_HOME to find config.
+            if let Ok(home) = crate::dirs::get_home() {
+                let tool_config = PathBuf::from(&home).join(".config").join("epkg").join("tool");
+                try_add_mount(&tool_config, None, true, true);
+            }
         } else if is_guest_root {
             // For non-root host + root guest: align mount with host's shared_store setting.
             //
@@ -902,8 +909,18 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
             // Also mount store at original path for symlink resolution.
             try_add_mount(&dirs().epkg_store, None, true, true);
             try_add_mount(&dirs().home_epkg, Some(Path::new("/root/.epkg")), false, true);
+            // Mount home_epkg at original host path too, for symlink resolution.
+            // Symlinks in ~/.config/epkg/tool point to paths like /Users/aa/.epkg/envs/self/usr/src/epkg/...
+            try_add_mount(&dirs().home_epkg, None, true, true);
             // Mount cache separately since home_cache is outside home_epkg on macOS
             try_add_mount(&dirs().home_cache, Some(Path::new("/root/.cache")), false, true);
+            // Mount tool config for mirror acceleration (GOPROXY, PIP_INDEX_URL, etc.)
+            // The tool wrapper uses EPKG_HOME to find config, so mount at original host path.
+            // Symlinks like my_region -> /Users/aa/.config/epkg/tool/env_vars/cn need this path.
+            if let Ok(home) = crate::dirs::get_home() {
+                let tool_config = PathBuf::from(&home).join(".config").join("epkg").join("tool");
+                try_add_mount(&tool_config, None, true, true);
+            }
         } else {
             // For non-root host + non-root guest: mount to same paths
             // The guest user will have the same UID as the host user (via virtiofs
@@ -913,6 +930,12 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
             try_add_mount(&dirs().home_epkg, None, false, true);
             try_add_mount(&dirs().home_cache, None, false, true);
             // Don't mount host /opt/epkg - not writable by non-root user
+            // Mount tool config for mirror acceleration at original host path.
+            // The tool wrapper uses EPKG_HOME to find config.
+            if let Ok(home) = crate::dirs::get_home() {
+                let tool_config = PathBuf::from(&home).join(".config").join("epkg").join("tool");
+                try_add_mount(&tool_config, None, true, true);
+            }
         }
     }
 

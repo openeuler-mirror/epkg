@@ -33,7 +33,9 @@ set -e
 
 _load_mirror_env_vars() {
     _tool="$1"
-    _config_file="${HOME}/.config/epkg/tool/my_region/${_tool}.yaml"
+    # Use EPKG_HOME for VM guest path consistency, fallback to HOME
+    _home="${EPKG_HOME:-${HOME}}"
+    _config_file="${_home}/.config/epkg/tool/my_region/${_tool}.yaml"
 
     [ -f "$_config_file" ] || return 0
 

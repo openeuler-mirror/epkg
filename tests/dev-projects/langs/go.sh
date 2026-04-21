@@ -44,6 +44,6 @@ fi
 
 run $SHELL_CMD 'mkdir -p /tmp/goproj && cd /tmp/goproj && printf "%s\n" "package main" "import \"fmt\"" "func main() { fmt.Println(\"ok\") }" > main.go'
 run $SHELL_CMD 'export GOCACHE=/tmp/go-build && cd /tmp/goproj && go build -o hello main.go && ./hello'
-run $SHELL_CMD 'cd /tmp && rm -rf gogetproj && mkdir -p gogetproj && cd gogetproj && go mod init test && export GOCACHE=/tmp/go-build && go get rsc.io/quote'
-run $SHELL_CMD 'export GOCACHE=/tmp/go-build && cd /tmp/gogetproj && printf "%s\n" "package main" "import (" "\"fmt\"" "\"rsc.io/quote\"" ")" "func main() { fmt.Println(quote.Hello()) }" > main.go && go run main.go'
+# Run go get and go run in same shell to preserve /tmp/gogetproj between operations
+run $SHELL_CMD 'export GOCACHE=/tmp/go-build && cd /tmp && rm -rf gogetproj && mkdir -p gogetproj && cd gogetproj && go mod init test && go get rsc.io/quote && printf "%s\n" "package main" "import (" "\"fmt\"" "\"rsc.io/quote\"" ")" "func main() { fmt.Println(quote.Hello()) }" > main.go && go run main.go'
 lang_ok
