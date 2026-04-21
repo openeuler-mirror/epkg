@@ -1000,7 +1000,7 @@ pub fn exists_or_any_symlink<P: AsRef<Path>>(path: P) -> bool {
 
 /// Check if host path exists (follows symlinks to target)
 /// Use case: Regular file/directory checks on host, NOT for env_root internal paths
-/// Example: Check ~/.config/epkg/tool/env_vars directory
+/// Example: Check ~/.epkg/config/tool/env_vars directory
 /// WARNING: Do NOT use for paths inside env_root!
 pub fn exists_on_host<P: AsRef<Path>>(path: P) -> bool {
     path.as_ref().exists()

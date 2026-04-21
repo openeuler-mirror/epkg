@@ -4,7 +4,9 @@
 require 'fileutils'
 
 def load_mirror_env_vars(tool)
-  config_file = File.expand_path("~/.config/epkg/tool/my_region/#{tool}.yaml")
+  # Use EPKG_HOME for VM guest path consistency, fallback to HOME
+  home = ENV['EPKG_HOME'] || ENV['HOME']
+  config_file = "#{home}/.epkg/config/tool/my_region/#{tool}.yaml"
   return unless File.exist?(config_file)
 
   File.readlines(config_file).each do |line|

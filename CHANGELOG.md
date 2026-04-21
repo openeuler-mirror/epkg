@@ -71,7 +71,7 @@
 - **Filesystem sandbox (`--isolate=fs`)** – Full container isolation via pivot_root into tmpfs-based root; proc, sysfs, tmpfs, devtmpfs/devpts, mqueue; capability dropping.
 - **Virtual machine sandbox (`--isolate=vm`)** – QEMU-based hardware virtualization with virtiofs shared filesystem; JSON command protocol (host vm_client ↔ guest vm_daemon); PTY and non-PTY execution modes.
 - **Flexible mount specification** – Docker-like syntax `[HOST|FS_TYPE:]SANDBOX_DIR[:OPTIONS]` (bind, tmpfs, proc, remount, `@` `env_root` substitution); automatic source existence checking with `try` fallback.
-- **Configuration hierarchy** – CLI `--isolate` > `~/.config/epkg/options.yaml` > `$env_root/etc/epkg/env.yaml`; mount specs additive across levels.
+- **Configuration hierarchy** – CLI `--isolate` > `~/.epkg/config/options.yaml` > `$env_root/etc/epkg/env.yaml`; mount specs additive across levels.
 - **Guest init and vm_daemon** – PID 1 init: mounts, network (10.0.2.15/24), kernel cmdline parsing, command/vm_daemon fork; vm_daemon: TCP server, JSON Lines protocol, PTY/pipes, Base64 binary, auto poweroff.
 - **Kernel module applets** – `insmod` (finit_module/init_module, compressed .ko); `modprobe` (modules.dep parsing, recursive deps, fs glob fallback) for VM guest `virtio_net`.
 - **Build targets** – `make.sh` `qemu-pkgs` (QEMU+virtiofsd), `sandbox-pkgs` (newuidmap/newgidmap); per-mode package lists for major distros.

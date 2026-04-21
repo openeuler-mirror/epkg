@@ -492,7 +492,7 @@ impl MountSpec {
 ///
 /// Priority order (highest to lowest):
 /// 1. RunOptions.sandbox - CLI input / per-run settings
-/// 2. EPKGConfig.sandbox - User defaults (~/.config/epkg/options.yaml)
+/// 2. EPKGConfig.sandbox - User defaults (~/.epkg/config/options.yaml)
 /// 3. EnvConfig.sandbox - Environment defaults (env_root/etc/epkg/env.yaml)
 ///
 /// Merging behavior:

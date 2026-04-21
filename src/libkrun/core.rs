@@ -885,12 +885,7 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
             try_add_mount(&dirs().home_cache, None, false, true);
             #[cfg(unix)]
             try_add_mount(&dirs().opt_epkg, None, false, true);
-            // Mount tool config for mirror acceleration at original host path.
-            // The tool wrapper uses EPKG_HOME to find config.
-            if let Ok(home) = crate::dirs::get_home() {
-                let tool_config = PathBuf::from(&home).join(".config").join("epkg").join("tool");
-                try_add_mount(&tool_config, None, true, true);
-            }
+            // Tool config is at ~/.epkg/config/tool which is under home_epkg, already mounted.
         } else if is_guest_root {
             // For non-root host + root guest: align mount with host's shared_store setting.
             //
@@ -910,17 +905,11 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
             try_add_mount(&dirs().epkg_store, None, true, true);
             try_add_mount(&dirs().home_epkg, Some(Path::new("/root/.epkg")), false, true);
             // Mount home_epkg at original host path too, for symlink resolution.
-            // Symlinks in ~/.config/epkg/tool point to paths like /Users/aa/.epkg/envs/self/usr/src/epkg/...
+            // Tool config at ~/.epkg/config/tool uses symlinks pointing to home_epkg paths.
             try_add_mount(&dirs().home_epkg, None, true, true);
             // Mount cache separately since home_cache is outside home_epkg on macOS
             try_add_mount(&dirs().home_cache, Some(Path::new("/root/.cache")), false, true);
-            // Mount tool config for mirror acceleration (GOPROXY, PIP_INDEX_URL, etc.)
-            // The tool wrapper uses EPKG_HOME to find config, so mount at original host path.
-            // Symlinks like my_region -> /Users/aa/.config/epkg/tool/env_vars/cn need this path.
-            if let Ok(home) = crate::dirs::get_home() {
-                let tool_config = PathBuf::from(&home).join(".config").join("epkg").join("tool");
-                try_add_mount(&tool_config, None, true, true);
-            }
+            // Tool config is at ~/.epkg/config/tool which is under home_epkg, already mounted.
         } else {
             // For non-root host + non-root guest: mount to same paths
             // The guest user will have the same UID as the host user (via virtiofs
@@ -930,12 +919,7 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
             try_add_mount(&dirs().home_epkg, None, false, true);
             try_add_mount(&dirs().home_cache, None, false, true);
             // Don't mount host /opt/epkg - not writable by non-root user
-            // Mount tool config for mirror acceleration at original host path.
-            // The tool wrapper uses EPKG_HOME to find config.
-            if let Ok(home) = crate::dirs::get_home() {
-                let tool_config = PathBuf::from(&home).join(".config").join("epkg").join("tool");
-                try_add_mount(&tool_config, None, true, true);
-            }
+            // Tool config is at ~/.epkg/config/tool which is under home_epkg, already mounted.
         }
     }
 

@@ -7,7 +7,7 @@ When users run `epkg install npm/pip/go/cargo` etc., the package download speed 
 ## Solution Overview
 
 Automatically create wrapper scripts in `$env_root/usr/local/bin/` for common package managers that:
-1. Read region-specific mirror config from `~/.config/epkg/tool/my_region/$tool.yaml`
+1. Read region-specific mirror config from `~/.epkg/config/tool/my_region/$tool.yaml`
 2. Export mirror env vars if not already set
 3. Execute the original tool binary
 
@@ -44,7 +44,7 @@ Automatically create wrapper scripts in `$env_root/usr/local/bin/` for common pa
 
 ```
 # Created on 'epkg self install':
-~/.config/epkg/tool/
+~/.epkg/config/tool/
 ├── env_vars  -> $EPKG_SRC/assets/tool/env_vars  (symlink)
 └── my_region -> cn                              (symlink to region dir)
 
@@ -108,7 +108,7 @@ import os
 import sys
 
 def load_mirror_env_vars(tool):
-    config_path = os.path.expanduser(f"~/.config/epkg/tool/my_region/{tool}.yaml")
+    config_path = os.path.expanduser(f"~/.epkg/config/tool/my_region/{tool}.yaml")
     if not os.path.exists(config_path):
         return
     # ... parse YAML and set env vars
@@ -130,7 +130,7 @@ Use a shared `shell-wrapper.sh` script with symlinks:
 #!/bin/sh
 # The tool name is derived from basename($0)
 _load_mirror_env_vars() {
-    _config_file="${HOME}/.config/epkg/tool/my_region/${1}.yaml"
+    _config_file="${HOME}/.epkg/config/tool/my_region/${1}.yaml"
     # ... parse YAML and export env vars
 }
 
@@ -209,4 +209,4 @@ Key functions:
 1. Fresh install: Install pip, verify wrapper created
 2. Existing config: Create `~/.pip/pip.conf`, install pip, verify wrapper NOT created
 3. Existing env var: Set `PIP_INDEX_URL`, install pip, verify wrapper NOT created
-4. Region detection: Check `~/.config/epkg/tool/my_region` symlink points to correct region
+4. Region detection: Check `~/.epkg/config/tool/my_region` symlink points to correct region

@@ -4,8 +4,10 @@ import os
 import sys
 
 def load_mirror_env_vars(tool):
-    """Load mirror env vars from ~/.config/epkg/tool/my_region/{tool}.yaml"""
-    config_path = os.path.expanduser(f"~/.config/epkg/tool/my_region/{tool}.yaml")
+    """Load mirror env vars from ~/.epkg/config/tool/my_region/{tool}.yaml"""
+    # Use EPKG_HOME for VM guest path consistency, fallback to HOME
+    home = os.environ.get('EPKG_HOME') or os.path.expanduser('~')
+    config_path = f"{home}/.epkg/config/tool/my_region/{tool}.yaml"
     if not os.path.exists(config_path):
         return
 

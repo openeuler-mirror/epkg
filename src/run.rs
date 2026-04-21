@@ -1284,7 +1284,7 @@ pub fn host_uses_traditional_layout() -> bool {
 ///
 /// # Priority Order (highest to lowest):
 /// 1. RunOptions.sandbox - CLI input / per-run settings (highest priority)
-/// 2. EPKGConfig.sandbox - User defaults from ~/.config/epkg/options.yaml
+/// 2. EPKGConfig.sandbox - User defaults from ~/.epkg/config/options.yaml
 /// 3. EnvConfig.sandbox - Environment defaults from env_root/etc/epkg/env.yaml (lowest priority)
 ///
 /// # Merging Behavior:

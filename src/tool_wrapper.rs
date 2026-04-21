@@ -113,10 +113,11 @@ pub fn get_region_code() -> Option<String> {
         .and_then(|cc| country_to_region(&cc).map(|s| s.to_string()))
 }
 
-/// Get the tool config directory path (~/.config/epkg/tool)
+/// Get the tool config directory path (~/.epkg/config/tool)
+/// Under home_epkg which is already mounted in VM, so no separate mount needed.
 fn get_tool_config_dir() -> Result<PathBuf> {
     let home = dirs::get_home()?;
-    Ok(crate::dirs::path_join(&PathBuf::from(home), &[".config", "epkg", "tool"]))
+    Ok(crate::dirs::path_join(&PathBuf::from(home), &[".epkg", "config", "tool"]))
 }
 
 /// Get the env_vars directory path
@@ -127,12 +128,12 @@ fn get_env_vars_dir() -> Result<PathBuf> {
 
 /// Setup tool config symlinks on `epkg self install`
 /// Creates:
-/// - ~/.config/epkg/tool/env_vars -> $EPKG_SRC/assets/tool/env_vars
-/// - ~/.config/epkg/tool/my_region -> cn/eu/us/etc.
+/// - ~/.epkg/config/tool/env_vars -> $EPKG_SRC/assets/tool/env_vars
+/// - ~/.epkg/config/tool/my_region -> cn/eu/us/etc.
 /// Setup tool config symlinks for mirror acceleration.
 /// Creates:
-/// - ~/.config/epkg/tool/env_vars -> $EPKG_SRC/assets/tool/env_vars
-/// - ~/.config/epkg/tool/my_region -> cn/eu/us/etc.
+/// - ~/.epkg/config/tool/env_vars -> $EPKG_SRC/assets/tool/env_vars
+/// - ~/.epkg/config/tool/my_region -> cn/eu/us/etc.
 /// This function is idempotent and handles errors internally.
 pub fn setup_tool_config_symlinks() {
     if let Err(e) = setup_tool_config_symlinks_inner() {
