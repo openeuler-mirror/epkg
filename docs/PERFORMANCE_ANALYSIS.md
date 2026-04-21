@@ -290,10 +290,10 @@ Total Wall Time: ~1.4s
     - rw: 400-3500μs (Reader/Writer memory mapping)
     - add: 700-4300μs (used ring update)
     - Total ~2ms per READ operation (inherent cost)
-14. **MAX_BUFFER_SIZE optimization**: Increased FUSE buffer size
-    - Changed from 1MB to 4MB (default)
-    - Reduces number of READ operations, lowering virtio overhead
-    - Configurable via EPKG_VIRTIOFS_MAX_BUFFER_SIZE env var
+14. **MAX_BUFFER_SIZE configuration**: Made FUSE buffer size configurable
+    - Default remains 1MB (no clear benefit from larger buffers)
+    - Testing showed high variability (3-9s for 50MB read) regardless of buffer size
+    - Configurable via EPKG_VIRTIOFS_MAX_BUFFER_SIZE env var for experimentation
 15. **File cache expansion**: Increased cache size and selective invalidation
     - Cache size: 128 → 512 entries (default)
     - Selective invalidation preserves other cached handles on modification
@@ -308,8 +308,8 @@ Total Wall Time: ~1.4s
 2. **READ virtio optimization**: 66% of total time
    - Inherent virtio/FUSE protocol overhead
    - Difficult to optimize without architecture changes
-   - Consider: larger READ sizes, batching, DAX mapping
-   - **IMPLEMENTED**: MAX_BUFFER_SIZE increased to 4MB (default)
+   - MAX_BUFFER_SIZE tested: no consistent benefit (high variability)
+   - Consider: DAX mapping improvements, batching
 
 3. **OPEN optimization**: 14% of total time
    - Windows kernel bottleneck, limited optimization potential
@@ -323,11 +323,11 @@ Total Wall Time: ~1.4s
 ## Performance Tuning via Environment Variables
 
 ### EPKG_VIRTIOFS_MAX_BUFFER_SIZE
-- Default: 4194304 (4MB)
+- Default: 1048576 (1MB)
 - Description: Maximum buffer size for FUSE READ/WRITE operations
-- Larger values reduce virtio queue overhead per operation
-- Recommended range: 1MB-8MB
-- Example: `EPKG_VIRTIOFS_MAX_BUFFER_SIZE=4194304`
+- Testing showed high variability in performance regardless of buffer size
+- Can be used for experimentation, but no consistent benefit observed
+- Example: `EPKG_VIRTIOFS_MAX_BUFFER_SIZE=4194304` (4MB)
 
 ### EPKG_VIRTIOFS_FILE_CACHE_SIZE
 - Default: 512
