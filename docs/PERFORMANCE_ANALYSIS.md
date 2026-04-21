@@ -299,6 +299,47 @@ Total Wall Time: ~1.4s
     - Selective invalidation preserves other cached handles on modification
     - Configurable via EPKG_VIRTIOFS_FILE_CACHE_SIZE env var
 
+## Buffer Size Performance Tests (2026-04-21)
+
+### Test Environment
+- Platform: Windows WHPX (WSL2)
+- Command: `epkg -e alpine run sh -c 'wc -c /home/wfg/epkg/testdata.bin'`
+- Test file: 50MB zero-filled file
+
+### Test Results
+
+| Buffer Size | Run 1 | Run 2 | Run 3 | Notes |
+|-------------|-------|-------|-------|-------|
+| 1MB (default) | 3.3s | 4.2s | 8.0s | High variability |
+| 2MB | 8.7s | 7.3s | 7.6s | No improvement |
+| 4MB | 7.2s | 8.3s | 8.8s | No improvement |
+
+**Key Finding**: No consistent performance benefit from larger buffer sizes.
+Performance varied widely (3-9s range) regardless of buffer configuration,
+suggesting other factors dominate: VM startup overhead, WHPX virtio protocol,
+and system load.
+
+### Small Command Performance (whoami)
+
+| Buffer Size | Avg Time | Notes |
+|-------------|----------|-------|
+| 1MB | ~1.4s | Baseline |
+| 4MB | ~1.4s | No difference |
+
+Small commands like `whoami` have no measurable buffer size impact because:
+- Total FUSE READ operations are minimal (~565 ops for a simple command)
+- VM startup (~420ms) and metadata operations dominate execution time
+
+### Large File Performance Analysis
+
+50MB file read performance breakdown:
+- VM startup: ~420ms
+- FUSE READ operations: ~2500ms (varies widely)
+- Calculated throughput: ~10-20 MB/s (highly variable)
+
+**Root Cause of Variability**: WHPX virtio queue overhead (~2ms per READ)
+combined with Windows file system cache state creates unpredictable timing.
+
 ## Future Optimization Opportunities
 
 1. **VM reuse mode**: Keep VM running for multiple commands (--reuse_vm)
