@@ -226,7 +226,7 @@ skip() {
     exit 0
 }
 
-# Run command via cmd.exe on Windows epkg.exe
+# Run command via WSL2 direct execution of epkg.exe
 # Converts output from Windows format (CRLF) to Unix format
 run_epkg_cmd() {
     local cmd="$*"
@@ -235,8 +235,8 @@ run_epkg_cmd() {
 
     log "Running: epkg.exe $cmd"
 
-    # Run via cmd.exe with full path to epkg.exe
-    output=$(cd /mnt/c && cmd.exe /c "${EPKG_WIN_PATH} $cmd" 2>&1) || exit_code=$?
+    # Run directly in WSL2 (Windows executables can be run directly)
+    output=$("$EPKG_BINARY" $cmd 2>&1) || exit_code=$?
     exit_code=${exit_code:-0}
 
     # Convert CRLF to LF and strip carriage returns
@@ -254,11 +254,11 @@ run_with_timeout() {
 
     log "Running with timeout ${timeout_secs}s: epkg.exe $cmd"
 
-    # Run via cmd.exe with full path to epkg.exe
     local output
     local exit_code=0
 
-    output=$(cd /mnt/c && timeout --foreground "$timeout_secs" cmd.exe /c "${EPKG_WIN_PATH} $cmd" 2>&1) || exit_code=$?
+    # Run directly in WSL2 (Windows executables can be run directly)
+    output=$(timeout --foreground "$timeout_secs" "$EPKG_BINARY" $cmd 2>&1) || exit_code=$?
 
     # Convert CRLF to LF
     output=$(echo "$output" | tr -d '\r')
@@ -279,23 +279,25 @@ run_with_timeout() {
 }
 
 # Capture output with timeout
+# Uses bash array to preserve argument boundaries
 capture_with_timeout() {
     local timeout_secs=60
-    local cmd="$*"
+    local cmd=("$@")
 
     # Check if first argument is a number (timeout override)
     if [ $# -gt 0 ] && [ "${1##*[!0-9]}" = "$1" ]; then
         timeout_secs="$1"
-        shift
-        cmd="$*"
+        cmd=("${cmd[@]:1}")
     fi
 
-    log "Running with timeout ${timeout_secs}s (capture): epkg.exe $cmd"
+    log "Running with timeout ${timeout_secs}s (capture): epkg.exe ${cmd[*]}"
 
     local output
     local exit_code=0
 
-    output=$(cd /mnt/c && timeout --foreground "$timeout_secs" cmd.exe /c "${EPKG_WIN_PATH} $cmd" 2>&1) || exit_code=$?
+    # Run directly in WSL2 (Windows executables can be run directly)
+    # Use "${cmd[@]}" to preserve argument boundaries
+    output=$(timeout --foreground "$timeout_secs" "$EPKG_BINARY" "${cmd[@]}" 2>&1) || exit_code=$?
 
     # Convert CRLF to LF
     output=$(echo "$output" | tr -d '\r')
@@ -405,6 +407,16 @@ output=$(capture_with_timeout 300 -e "$ENV_NAME" --assume-yes install bash coreu
 # Ensure /etc/passwd has root so whoami prints "root" in the VM
 ENV_ROOT_WIN="C:\\Users\\${WIN_USER}\\\.epkg\\envs\\$ENV_NAME"
 ENV_ROOT="/mnt/c/Users/${WIN_USER}/.epkg/envs/$ENV_NAME"
+if [ -d "$ENV_ROOT" ]; then
+    if [ ! -f "$ENV_ROOT/etc/passwd" ]; then
+        log "Creating /etc/passwd with root entry for whoami test"
+        printf '%s\n' "root:x:0:0:root:/root:/bin/sh" > "$ENV_ROOT/etc/passwd"
+    elif ! grep -q "^root:" "$ENV_ROOT/etc/passwd" 2>/dev/null; then
+        log "Adding root entry to /etc/passwd for whoami test"
+        (printf '%s\n' "root:x:0:0:root:/root:/bin/sh"; cat "$ENV_ROOT/etc/passwd") > "$ENV_ROOT/etc/passwd.new"
+        mv "$ENV_ROOT/etc/passwd.new" "$ENV_ROOT/etc/passwd"
+    fi
+fi
 
 # ============================================
 # Test Suite: VM Sandbox (WSL2 + Windows)
@@ -542,8 +554,9 @@ fi
 
 # Test 5: Exit code propagation
 log "Test 5: Testing exit code propagation"
-run_epkg_cmd "-e $ENV_NAME run $ISOLATE_OPTS --io=batch sh -c 'exit 42'" >/dev/null 2>&1
-exit_code=$?
+# Use direct execution to capture exit code (capture_with_timeout fails on non-zero exit)
+"$EPKG_BINARY" -e "$ENV_NAME" run $ISOLATE_OPTS --io=batch sh -c "exit 42" >/dev/null 2>&1 || exit_code=$?
+exit_code=${exit_code:-0}
 if [ "$exit_code" = "42" ]; then
     test_passed 5
 else
@@ -590,7 +603,7 @@ fi
 
 # Test 10: Process signals
 log "Test 10: Testing process signal handling"
-output=$(capture_with_timeout -e "$ENV_NAME" run $ISOLATE_OPTS --io=batch sh -c 'trap "echo caught" SIGTERM; kill -TERM \$\$; echo done')
+output=$(capture_with_timeout -e "$ENV_NAME" run $ISOLATE_OPTS --io=batch sh -c 'trap "echo caught" SIGTERM; kill -TERM $PPID; echo done')
 if echo "$output" | grep -q "caught"; then
     test_passed 10
 else
