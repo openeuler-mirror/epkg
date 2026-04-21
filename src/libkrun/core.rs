@@ -2413,6 +2413,19 @@ pub fn run_vm_daemon_mode(
 
     log::info!("libkrun: VM configured for daemon mode (ctx_id={})", ctx_id);
 
+    // Register session IMMEDIATELY after VM configuration, before waiting for guest ready.
+    // This allows `vm start` parent to detect the session quickly (within 10s).
+    // The session file marks daemon_pid as running, so parent can return success.
+    let vm_config = crate::vm::VmConfig {
+        timeout: timeout_secs,
+        extend: timeout_secs,  // Use same value for extend
+        cpus,
+        memory_mib,
+        backend: "libkrun".to_string(),
+    };
+    crate::vm::register_vm_session(env_root, env_name, &vsock_sock_path, "libkrun", &vm_config)?;
+    log::info!("libkrun: VM daemon session registered (pending guest ready)");
+
     // Setup ready listener
     let env_hash = crate::utils::hash_env_root(env_root);
     let ready_listener = super::bridge::setup_vsock_ready_listener(&env_hash)?
@@ -2429,25 +2442,15 @@ pub fn run_vm_daemon_mode(
     let ready_result = super::bridge::wait_guest_ready_windows(&ready_listener, Some(&start_failed_rx));
     if let Err(e) = ready_result {
         log::error!("libkrun: VM startup failed in daemon mode: {}", e);
+        // Cleanup session file on failure
+        let _ = crate::vm::unregister_vm_session(env_name);
         let _ = unsafe { krun_signal_shutdown(ctx_id) };
         let _ = vm_thread.join();
         let _ = unsafe { krun_free_ctx(ctx_id) };
         return Err(e);
     }
 
-    log::info!("libkrun: guest ready in daemon mode");
-
-    // Register session so other processes can discover the VM
-    let vm_config = crate::vm::VmConfig {
-        timeout: timeout_secs,
-        extend: timeout_secs,  // Use same value for extend
-        cpus,
-        memory_mib,
-        backend: "libkrun".to_string(),
-    };
-    crate::vm::register_vm_session(env_root, env_name, &vsock_sock_path, "libkrun", &vm_config)?;
-
-    log::info!("libkrun: VM daemon session registered, waiting for VM shutdown...");
+    log::info!("libkrun: guest ready in daemon mode, waiting for VM shutdown...");
 
     // Setup SIGTERM handler to trigger libkrun shutdown
     // This allows the host to request quick VM termination

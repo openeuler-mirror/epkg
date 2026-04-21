@@ -83,6 +83,7 @@ fn read_and_delete_pending_config(env_name: &str) -> Result<Option<VmConfig>> {
 }
 
 /// Wait for VM session to be ready.
+/// Uses short timeout since session file is created immediately by child process.
 fn wait_for_session_ready(_env_root: &Path, env_name: &str, timeout_secs: u32) -> Result<()> {
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(timeout_secs as u64);
@@ -134,7 +135,8 @@ fn vm_start_unix(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()
         }
         pid if pid > 0 => {
             // Parent process: wait for session ready
-            wait_for_session_ready(env_root, env_name, 30)?;
+            // Short timeout (10s) - child creates session file immediately after fork
+            wait_for_session_ready(env_root, env_name, 10)?;
         }
         _ => {
             return Err(eyre::eyre!("fork() failed"));
@@ -164,7 +166,8 @@ fn vm_start_windows(env_root: &Path, env_name: &str, config: VmConfig) -> Result
         .spawn()?;
 
     // Parent: wait for session ready
-    wait_for_session_ready(env_root, env_name, 30)?;
+    // Short timeout (10s) - child creates session file immediately after spawn
+    wait_for_session_ready(env_root, env_name, 10)?;
 
     Ok(())
 }
