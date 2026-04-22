@@ -207,7 +207,7 @@ pub fn link_package_generic(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> 
 
 /// Handle LinkType::Move logic: check if store is consumed and copy files if needed.
 /// Returns Some(fs_files) if files were copied from existing env, None otherwise.
-fn handle_move_link_type(
+pub fn handle_move_link_type(
     store_path: &Path,
     store_fs_dir: &PathBuf,
     env_root: &Path,

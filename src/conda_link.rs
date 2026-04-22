@@ -24,7 +24,7 @@ use memchr::memmem;
 use crate::shebang::{is_valid_shebang_length, convert_shebang_to_env};
 use crate::plan::InstallationPlan;
 use crate::models::LinkType;
-use crate::link::{link_package_generic, mirror_file};
+use crate::link::mirror_file;
 #[cfg(unix)]
 use crate::utils;
 use crate::lfs;
@@ -837,13 +837,18 @@ fn link_file_without_prefix_replacement(
     let is_link = lfs::is_symlink(source_path);
 
     // Determine link type based on path_type and plan capabilities
+    // Conda paths.json specifies preferred link type for each file:
+    // - "hardlink": use hardlink if possible, else fall back to plan.link
+    // - "softlink": use symlink if possible, else fall back to plan.link
+    // - "file" or other: use plan.link (Move, Hardlink, Reflink, etc.)
     let link_type = if path_type == "hardlink" && plan.can_hardlink {
         LinkType::Hardlink
     } else if path_type == "softlink" && plan.can_symlink {
         LinkType::Symlink
     } else {
-        // Default to reflink or copy
-        LinkType::Reflink
+        // For path_type="file" or when hardlink/softlink not possible,
+        // use plan.link (respects Move link type for space efficiency)
+        plan.link
     };
 
     // On Windows, resolve ancestor directory symlinks (e.g., share -> usr/share)
@@ -932,13 +937,26 @@ pub fn link_conda_package(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Re
     let package_dir = store_fs_dir.parent()
         .ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path: {}", store_fs_dir.display()))?;
 
+    // For LinkType::Move, check if store is already consumed and create marker
+    // This mirrors the logic in link_package_generic for proper Move handling
+    if plan.link == crate::models::LinkType::Move {
+        if let Some(_fs_files) = crate::link::handle_move_link_type(package_dir, store_fs_dir, &plan.env_root)? {
+            // Files were copied from existing environment, skip further processing
+            return Ok(());
+        }
+
+        // Create consumed marker before moving files
+        crate::store::create_consumed_marker(package_dir, &plan.env_root.display().to_string(), &plan.env_root)
+            .with_context(|| format!("Failed to create consumed marker for {}", package_dir.display()))?;
+    }
+
     // Prepare metadata
     let (index_json, paths_entries, python_info) = prepare_conda_package_metadata(package_dir)?;
 
     // If paths.json is missing (empty entries), fall back to generic linking
     if paths_entries.is_empty() {
         log::info!("paths.json missing or empty for {}, falling back to generic linking", package_dir.display());
-        return link_package_generic(plan, store_fs_dir);
+        return crate::link::link_package_generic(plan, store_fs_dir);
     }
 
     // Compute final paths (with noarch remapping if needed)
