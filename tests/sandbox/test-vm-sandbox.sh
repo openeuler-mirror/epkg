@@ -760,7 +760,12 @@ wait_for_vm_session_stop() {
 # Test VM-1: vm start basic
 log "Test VM-1: vm start basic functionality"
 # Ensure no stale VM session from previous tests
+# Stop VM and wait for complete cleanup
 "$EPKG_BIN" vm stop "$ENV_NAME" 2>/dev/null || true
+wait_for_vm_session_stop "$ENV_NAME" || true
+# Also clean up any stale files that might remain
+rm -f "$(get_session_file "$ENV_NAME")" 2>/dev/null || true
+rm -f "$(get_socket_path "$ENV_NAME")" 2>/dev/null || true
 run_with_timeout "$EPKG_BIN" vm start "$ENV_NAME"
 # Verify session exists (use wait_for_vm_session which retries for socket creation)
 # Note: vm start now returns quickly after registering session, before socket is created
