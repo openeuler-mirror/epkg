@@ -139,11 +139,20 @@ pub fn discover_vm_session(env_name: &str) -> Result<Option<VmSessionInfo>> {
     // which would cause the guest daemon to accept and then see connection close,
     // leading to guest shutdown.
     // For QEMU backend with vsock, socket_path is "vsock:3" which is not a real file.
+    // For libkrun on Unix: socket is created by libkrun after krun_start_enter.
+    // During daemon startup (register_vm_session before guest ready), socket may not exist yet.
+    // We still accept the session if daemon is alive - socket will be created soon.
     let socket_exists = if info.socket_path.to_string_lossy().starts_with("vsock:") {
         true  // vsock addresses are virtual, always considered "exists"
     } else {
         #[cfg(all(unix, feature = "libkrun"))]
-        { info.socket_path.exists() }
+        {
+            // For libkrun on Unix: accept session if daemon is alive, even if socket doesn't exist yet.
+            // The socket is created by libkrun after krun_start_enter, which may take several seconds.
+            // We already checked daemon_pid is alive above, so this is a valid pending session.
+            // This fixes the race condition where register_vm_session happens before socket creation.
+            true
+        }
         #[cfg(all(windows, feature = "libkrun"))]
         { true }  // Windows named pipes don't have a file to check
         #[cfg(not(feature = "libkrun"))]

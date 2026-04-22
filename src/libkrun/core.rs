@@ -66,10 +66,8 @@ fn connect_to_existing_vm_socket(_env_root: &Path) -> Result<Option<(std::os::un
     }
 
     // libkrun uses Unix socket
-    let stream = std::os::unix::net::UnixStream::connect(&info.socket_path)?;
-    // Increase socket buffer sizes to handle large data transfers
-    use std::os::unix::io::AsRawFd;
-    super::set_socket_buffer_size(stream.as_raw_fd());
+    // Use retry mechanism to handle VM startup latency
+    let stream = super::bridge::connect_vsock_bridge(&info.socket_path, super::bridge::VSOCK_BRIDGE_MAX_RETRIES)?;
     log::info!("libkrun: connected to existing VM socket: {}", info.socket_path.display());
     Ok(Some((stream, info)))
 }

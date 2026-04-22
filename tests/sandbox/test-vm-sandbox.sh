@@ -694,6 +694,11 @@ is_vm_session_active() {
         if echo "$session_socket_path" | grep -q '^vsock:'; then
             return 0
         fi
+        # libkrun sockets: socket may not exist yet during pending startup
+        # If daemon is alive and path contains "vsock-", consider it active
+        if echo "$session_socket_path" | grep -q 'vsock-.*\.sock$'; then
+            return 0
+        fi
     fi
     # Check if Unix socket is connectable
     local socket_path
@@ -701,6 +706,24 @@ is_vm_session_active() {
     if [ -S "$socket_path" ] && [ -w "$socket_path" ]; then
         return 0
     fi
+    return 1
+}
+
+# Helper: wait for VM guest to be ready (can execute commands)
+wait_for_guest_ready() {
+    local env_name="$1"
+    local max_wait=30
+    local waited=0
+    while [ $waited -lt $max_wait ]; do
+        local test_output
+        test_output=$("$EPKG_BIN" -e "$env_name" run --isolate=vm --io=batch echo ready 2>&1)
+        if [ "$test_output" = "ready" ]; then
+            log "Guest ready after $waited seconds"
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
     return 1
 }
 
@@ -739,9 +762,15 @@ log "Test VM-1: vm start basic functionality"
 # Ensure no stale VM session from previous tests
 "$EPKG_BIN" vm stop "$ENV_NAME" 2>/dev/null || true
 run_with_timeout "$EPKG_BIN" vm start "$ENV_NAME"
-# Verify session exists
-if ! is_vm_session_active "$ENV_NAME"; then
+# Verify session exists (use wait_for_vm_session which retries for socket creation)
+# Note: vm start now returns quickly after registering session, before socket is created
+if ! wait_for_vm_session "$ENV_NAME"; then
     error "Test VM-1 failed: VM session not active after vm start"
+fi
+# Wait for VM guest to be ready: try running a simple command
+# vm start returns quickly, but guest needs time to boot
+if ! wait_for_guest_ready "$ENV_NAME"; then
+    error "Test VM-1 failed: guest not ready after 30 seconds"
 fi
 log "Test VM-1: PASSED"
 
@@ -861,6 +890,9 @@ run_with_timeout "$EPKG_BIN" vm start "$ENV_NAME" --vmm="$VMM_BACKEND"
 if ! wait_for_vm_session "$ENV_NAME"; then
     error "Test VM-10 failed: VM session not active after vm start --vmm"
 fi
+if ! wait_for_guest_ready "$ENV_NAME"; then
+    error "Test VM-10 failed: guest not ready after 30 seconds"
+fi
 output=$(capture_with_timeout "$EPKG_BIN" vm status "$ENV_NAME")
 if ! echo "$output" | grep -qE "backend: +$VMM_BACKEND"; then
     error "Test VM-10 failed: Expected backend: $VMM_BACKEND in status, got: $output"
@@ -874,6 +906,9 @@ wait_for_vm_session_stop "$ENV_NAME" || true
 run_with_timeout "$EPKG_BIN" vm start "$ENV_NAME" -s timeout=0
 if ! wait_for_vm_session "$ENV_NAME"; then
     error "Test VM-11 failed: VM session not active"
+fi
+if ! wait_for_guest_ready "$ENV_NAME"; then
+    error "Test VM-11 failed: guest not ready after 30 seconds"
 fi
 output=$(capture_with_timeout "$EPKG_BIN" vm status "$ENV_NAME")
 if ! echo "$output" | grep -q "timeout: 0"; then
