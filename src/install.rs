@@ -689,6 +689,16 @@ fn expose_packages(plan: &mut InstallationPlan) -> Result<()> {
             continue;
         }
 
+        // Check if store directory exists and has filelist.txt
+        // This is especially important for skipped_reinstalls whose store may have been consumed or deleted
+        let store_dir = store_fs_dir.parent().unwrap_or(&store_fs_dir);
+        let filelist_path = crate::dirs::path_join(store_dir, &["info", "filelist.txt"]);
+        if !lfs::exists_on_host(&filelist_path) {
+            log::warn!("Skipping exposure for {} - store directory missing or consumed: {}",
+                       pkgkey, store_dir.display());
+            continue;
+        }
+
         crate::expose::expose_package(plan, &store_fs_dir, &pkgkey)?;
     }
 
