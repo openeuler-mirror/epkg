@@ -720,13 +720,14 @@ is_vm_session_active() {
 
 # Helper: wait for VM guest to be ready (can execute commands)
 # Note: uses 2>/dev/null to suppress epkg debug logs when RUST_LOG is set
+# Important: Must specify --vmm to match the session's backend for proper connection
 wait_for_guest_ready() {
     local env_name="$1"
     local max_wait=30
     local waited=0
     while [ $waited -lt $max_wait ]; do
         local test_output
-        test_output=$("$EPKG_BIN" -e "$env_name" run --isolate=vm --io=batch echo ready 2>/dev/null)
+        test_output=$("$EPKG_BIN" -e "$env_name" run --isolate=vm --vmm="$VMM_BACKEND" --io=batch echo ready 2>/dev/null)
         if [ "$test_output" = "ready" ]; then
             log "Guest ready after $waited seconds"
             return 0

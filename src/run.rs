@@ -39,7 +39,8 @@ pub fn is_vm_reuse_active_for_env(_env_root: &Path) -> bool {
 /// Try to connect to an existing VM session and execute the command.
 /// Returns Some(exit_code) if successfully connected and executed.
 /// Returns None if no existing VM session exists.
-#[cfg(feature = "libkrun")]
+/// Only used for macOS/Windows (libkrun backend). Linux uses vm::client module.
+#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
 fn try_connect_and_execute_vm(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
     // Build command parts
     let mut cmd_parts = vec![run_options.command.clone()];
@@ -735,7 +736,38 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
             crate::debug_epkg!("fork_and_execute: starting for VM mode");
 
             // Check for existing VM session to reuse (cross-process discovery)
-            #[cfg(feature = "libkrun")]
+            // On Linux, this works for both QEMU and libkrun backends
+            #[cfg(target_os = "linux")]
+            {
+                let mut cmd_parts = vec![prepared_opts.command.clone()];
+                cmd_parts.extend(prepared_opts.args.clone());
+
+                // Determine cwd for VM
+                let cwd_str;
+                let cwd = if prepared_opts.chdir_to_env_root {
+                    Some("/")
+                } else {
+                    cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string());
+                    cwd_str.as_deref()
+                };
+
+                if let Some(exit_code) = crate::vm::client::try_execute_via_existing_vm_session(
+                    &cmd_parts,
+                    prepared_opts.io_mode,
+                    Some(&prepared_opts.env_vars),
+                    cwd,
+                )? {
+                    log::info!("run: reused existing VM session, exit_code={}", exit_code);
+                    if exit_code == 0 {
+                        return Ok(None);
+                    } else {
+                        return Err(eyre::eyre!("Command exited with code {} in reused VM session", exit_code));
+                    }
+                }
+            }
+
+            // Non-Linux: use libkrun's session discovery
+            #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
             if let Some(exit_code) = try_connect_and_execute_vm(env_root, &prepared_opts)? {
                 log::info!("run: reused existing VM session, exit_code={}", exit_code);
                 // For foreground processes, return Ok(None) on success, or error on failure

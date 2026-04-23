@@ -330,6 +330,123 @@ pub fn send_command_to_running_qemu_guest(
     send_command_via_vsock_impl(cmd_parts, io_mode, 10000, None, true, vm_keep_timeout_secs, user)
 }
 
+/// Try to discover and connect to an existing VM session.
+/// Returns Some(exit_code) if successfully connected and executed.
+/// Returns None if no existing VM session exists.
+///
+/// This function enables cross-process VM reuse for `epkg run` when a VM
+/// session was created by `epkg vm start` (daemon mode).
+pub fn try_execute_via_existing_vm_session(
+    cmd_parts: &[String],
+    io_mode: IoMode,
+    env_vars: Option<&std::collections::HashMap<String, String>>,
+    cwd: Option<&str>,
+) -> Result<Option<i32>> {
+    use super::session::discover_vm_session;
+
+    let env_name = &crate::models::config().common.env_name;
+    let info = match discover_vm_session(env_name)? {
+        Some(i) => i,
+        None => return Ok(None),
+    };
+
+    log::info!("vm_client: discovered existing VM session for {} (backend={})", env_name, info.backend);
+
+    // Only handle QEMU backend here (vsock)
+    // libkrun backend is handled by libkrun module
+    if info.backend != "qemu" {
+        log::debug!("vm_client: backend {} not handled here, skipping", info.backend);
+        return Ok(None);
+    }
+
+    // Connect via vsock (QEMU uses vsock:3 format in session)
+    let socket_str = info.socket_path.to_string_lossy();
+    if !socket_str.starts_with("vsock:") {
+        log::debug!("vm_client: unexpected socket_path format: {}", socket_str);
+        return Ok(None);
+    }
+
+    // Use session's configured timeout for vm_keep_timeout
+    let vm_keep_timeout_secs = if info.config.timeout == 0 {
+        None  // 0 means never timeout
+    } else {
+        Some(info.config.timeout)
+    };
+
+    // Build request with env_vars and cwd
+    let request = build_extended_command_request(
+        cmd_parts,
+        io_mode,
+        true,  // reuse_session
+        vm_keep_timeout_secs,
+        None,  // user
+        env_vars,
+        cwd,
+    );
+
+    // Connect to command port (10000)
+    let mut stream = connect_vsock_with_retry(10000, 30)?;
+
+    log::debug!("vm_client: connected to existing QEMU VM, sending command {:?}", cmd_parts);
+
+    let request_json = serde_json::to_vec(&request)?;
+    stream.write_all(&request_json)?;
+    stream.write_all(b"\n")?;
+
+    let (use_pty, is_batch) = resolve_io_mode(io_mode);
+    log::debug!("vm_client: request sent, use_pty={}, is_batch={}", use_pty, is_batch);
+
+    let exit_code = if is_batch {
+        handle_batch(&mut stream)?
+    } else {
+        handle_streaming(&mut stream, use_pty)?
+    };
+
+    log::info!("vm_client: command executed via existing VM session, exit_code={}", exit_code);
+    Ok(Some(exit_code))
+}
+
+/// Build extended command request with environment variables and working directory.
+fn build_extended_command_request(
+    cmd_parts: &[String],
+    io_mode: IoMode,
+    reuse_session: bool,
+    vm_keep_timeout_secs: Option<u32>,
+    user: Option<&str>,
+    env_vars: Option<&std::collections::HashMap<String, String>>,
+    cwd: Option<&str>,
+) -> serde_json::Value {
+    let (use_pty, is_batch) = resolve_io_mode(io_mode);
+    let mut m = serde_json::Map::new();
+    m.insert("command".to_string(), serde_json::Value::Array(
+        cmd_parts.iter().map(|s| serde_json::Value::String(s.clone())).collect()
+    ));
+    m.insert("batch".to_string(), serde_json::Value::Bool(is_batch));
+    if use_pty {
+        m.insert("pty".to_string(), serde_json::Value::Bool(true));
+    }
+    if reuse_session {
+        m.insert("reuse_vm".to_string(), serde_json::Value::Bool(true));
+        if let Some(secs) = vm_keep_timeout_secs {
+            m.insert("vm_keep_timeout_secs".to_string(), serde_json::Value::Number(secs.into()));
+        }
+    }
+    if let Some(u) = user {
+        m.insert("user".to_string(), serde_json::Value::String(u.to_string()));
+    }
+    if let Some(vars) = env_vars {
+        if !vars.is_empty() {
+            m.insert("env".to_string(), serde_json::Value::Object(
+                vars.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect()
+            ));
+        }
+    }
+    if let Some(d) = cwd {
+        m.insert("cwd".to_string(), serde_json::Value::String(d.to_string()));
+    }
+    serde_json::Value::Object(m)
+}
+
 fn send_command_via_vsock_impl(
     cmd_parts: &[String],
     io_mode: IoMode,
