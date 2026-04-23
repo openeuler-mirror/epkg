@@ -106,6 +106,10 @@ log() {
 
 error() {
     printf "%b[ERROR]%b %b\n" "$RED" "$NC" "$*" >&2
+    # Cleanup VM session before exit to avoid leaving orphan VM daemon
+    if [ -n "$ENV_NAME" ]; then
+        "$EPKG_BIN" vm stop "$ENV_NAME" 2>/dev/null || true
+    fi
     if [ -n "$INTERACTIVE" ]; then
         printf "\n=== Debug Mode ===\n" >&2
         printf "Press Enter to continue (or Ctrl+C to exit)...\n" >&2
