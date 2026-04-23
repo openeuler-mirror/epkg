@@ -142,9 +142,11 @@ check_vm_log() {
         "$log_file" 2>/dev/null || cat "$log_file")
 
     # Check for kernel panic indicators (use -E for extended regex, portable across GNU/BSD grep)
-    if echo "$filtered_log" | grep -E -w "Kernel panic|Panic|Oops|BUG|Call Trace" >/dev/null 2>&1; then
+    # Note: exclude Rust log patterns that might contain "BUG" (from split "DEBUG" across interleaved lines)
+    # Use more specific patterns that start with kernel timestamp format [    X.XXXXXX]
+    if echo "$filtered_log" | grep -E '^\[ *[0-9]+\.[0-9]+\] (Kernel panic|Panic|BUG:|Oops|Call Trace)' >/dev/null 2>&1; then
         echo "${RED}[ERROR]${NC} Kernel panic or serious error detected in VM log:" >&2
-        echo "$filtered_log" | grep -E -w "Kernel panic|Panic|Oops|BUG|Call Trace" >&2
+        echo "$filtered_log" | grep -E '^\[ *[0-9]+\.[0-9]+\] (Kernel panic|Panic|BUG:|Oops|Call Trace)' >&2
         error "See $log_file for full log"
     fi
 }
@@ -185,6 +187,8 @@ run_with_timeout() {
 }
 
 # Run command with timeout and capture output
+# Note: Returns exit code. Caller should check return value and handle errors.
+# Output is echoed at the end, so caller can capture it.
 capture_with_timeout() {
     local timeout_secs=60
     local cmd=("$@")
@@ -216,14 +220,15 @@ capture_with_timeout() {
             log "Command succeeded"
             ;;
         124|142)
-            error "Command timed out after ${timeout_secs}s"
+            printf "%b[ERROR]%b %b\n" "$RED" "$NC" "Command timed out after ${timeout_secs}s" >&2
             ;;
         *)
-            error "Command failed with exit code $exit_code"
+            printf "%b[ERROR]%b %b\n" "$RED" "$NC" "Command failed with exit code $exit_code" >&2
             ;;
     esac
     check_vm_log
     echo "$output"
+    return $exit_code
 }
 
 # Check dependencies
@@ -714,13 +719,14 @@ is_vm_session_active() {
 }
 
 # Helper: wait for VM guest to be ready (can execute commands)
+# Note: uses 2>/dev/null to suppress epkg debug logs when RUST_LOG is set
 wait_for_guest_ready() {
     local env_name="$1"
     local max_wait=30
     local waited=0
     while [ $waited -lt $max_wait ]; do
         local test_output
-        test_output=$("$EPKG_BIN" -e "$env_name" run --isolate=vm --io=batch echo ready 2>&1)
+        test_output=$("$EPKG_BIN" -e "$env_name" run --isolate=vm --io=batch echo ready 2>/dev/null)
         if [ "$test_output" = "ready" ]; then
             log "Guest ready after $waited seconds"
             return 0
