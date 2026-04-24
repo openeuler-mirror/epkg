@@ -739,7 +739,20 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
             // On Linux, this works for both QEMU and libkrun backends
             #[cfg(target_os = "linux")]
             {
-                let mut cmd_parts = vec![prepared_opts.command.clone()];
+                // Resolve command path to get full epkg binary path (symlink to epkg)
+                // e.g., "list" -> "/home/user/.epkg/envs/test-vm-sandbox/usr/bin/list"
+                let resolved_cmd_path = resolve_command_path(env_root, &prepared_opts)?;
+
+                // Convert host path to guest path format for VM execution
+                // e.g., "/home/user/.epkg/envs/test-vm-sandbox/usr/bin/list" -> "/usr/bin/list"
+                let guest_cmd_path = if resolved_cmd_path.starts_with(env_root) {
+                    let stripped = resolved_cmd_path.strip_prefix(env_root).unwrap_or(&resolved_cmd_path);
+                    std::path::Path::new("/").join(stripped)
+                } else {
+                    resolved_cmd_path.clone()
+                };
+
+                let mut cmd_parts = vec![guest_cmd_path.to_string_lossy().to_string()];
                 cmd_parts.extend(prepared_opts.args.clone());
 
                 // Determine cwd for VM
