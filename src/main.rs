@@ -2488,7 +2488,11 @@ fn command_list(sub_matches: &clap::ArgMatches) -> Result<()> {
         .map(|s| s.as_str())
         .unwrap_or("");
 
-    sync_channel_metadata()?;
+    // Only sync metadata for scopes that need remote data
+    // Installed scope only needs local installed packages, no network needed
+    if scope != ListScope::Installed {
+        sync_channel_metadata()?;
+    }
     list_packages_with_scope(scope, pattern)?;
     Ok(())
 }
