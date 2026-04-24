@@ -1018,7 +1018,7 @@ log "Test VM-17: PASSED"
 
 # Test VM-18: epkg list in VM
 log "Test VM-18: epkg list in VM session"
-output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch epkg list)
+output=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch epkg list --installed)
 # Should show at least bash and coreutils (installed earlier)
 if ! echo "$output" | grep -q "bash"; then
     error "Test VM-18 failed: epkg list should show bash, got '$output'"

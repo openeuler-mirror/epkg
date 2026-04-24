@@ -584,12 +584,12 @@ fn build_qemu_command(
     // debug + earlycon for kernel debugging, loglevel=8 for verbose output
     let mut append_args = if std::env::consts::ARCH == "aarch64" {
         format!(
-            "console={} debug earlycon=pl011,0x9000000 panic=1 root={} rootfstype={} init=/usr/bin/init sysctl.fs.file-max=1048576 loglevel=8",
+            "console={} debug earlycon=pl011,0x9000000 panic=1 root={} rootfstype={} init=/usr/bin/init sysctl.fs.file-max=1048576 loglevel=8 epkg.tsi=0",
             console_dev, mount_tag, rootfstype
         )
     } else {
         format!(
-            "console={} debug panic=1 root={} rootfstype={} init=/usr/bin/init sysctl.fs.file-max=1048576 loglevel=8",
+            "console={} debug panic=1 root={} rootfstype={} init=/usr/bin/init sysctl.fs.file-max=1048576 loglevel=8 epkg.tsi=0",
             console_dev, mount_tag, rootfstype
         )
     };

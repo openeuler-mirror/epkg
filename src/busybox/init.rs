@@ -967,6 +967,7 @@ fn configure_network() -> Result<(), String> {
         interface: Some(iface),
     })
     .map_err(|e| format!("route add default: {}", e))?;
+
     log::debug!("init: network configured");
     Ok(())
 }
