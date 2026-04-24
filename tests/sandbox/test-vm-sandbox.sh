@@ -952,8 +952,8 @@ log "Test VM-13: PASSED"
 
 # Test VM-14: date comparison with host
 log "Test VM-14: date sync between VM and host"
-host_date=$(date +%Y-%m-%d)
-vm_date=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch date +%Y-%m-%d)
+host_date=$(date -u +%Y-%m-%d)
+vm_date=$(capture_with_timeout "$EPKG_BIN" -e "$ENV_NAME" run --isolate=vm --io=batch -- date -u +%Y-%m-%d)
 vm_date=$(echo "$vm_date" | grep -v '^\[' | grep -v '^$' | tail -1)
 if [ "$host_date" != "$vm_date" ]; then
     error "Test VM-14 failed: VM date '$vm_date' differs from host '$host_date'"
