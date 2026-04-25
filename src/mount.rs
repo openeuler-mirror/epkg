@@ -1229,3 +1229,292 @@ pub(crate) fn parse_mount_specs(spec_strings: &[&str]) -> Vec<MountSpec> {
         .map(|s| parse_mount_spec(s).expect(&format!("Failed to parse mount spec '{}'", s)))
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nix::mount::MsFlags;
+
+    fn has_flag(flags: u64, flag: MsFlags) -> bool {
+        (flags & flag.bits()) != 0
+    }
+
+    // Tests for examples documented in parse_mount_spec() comment
+
+    #[test]
+    fn test_bind_host_usr_to_sandbox_usr_ro_try() {
+        // Bind host /usr to sandbox /usr read-only, skip if missing
+        let spec = parse_mount_spec("/usr:/usr:ro,try").unwrap();
+        assert_eq!(spec.source, "/usr");
+        assert_eq!(spec.target, "@/usr");    // @ prefix added for sandbox
+        assert_eq!(spec.fs_type, "");
+        assert!(has_flag(spec.flags, MsFlags::MS_BIND));
+        assert!(has_flag(spec.flags, MsFlags::MS_RDONLY));
+        assert!(spec.try_only);
+    }
+
+    #[test]
+    fn test_bind_dev_zero_recursive_silent() {
+        // Bind host /dev/zero to sandbox /dev/zero
+        let spec = parse_mount_spec("/dev/zero:recursive,silent").unwrap();
+        assert_eq!(spec.source, "/dev/zero");
+        assert_eq!(spec.target, "@/dev/zero");
+        assert_eq!(spec.fs_type, "");
+        assert!(has_flag(spec.flags, MsFlags::MS_BIND));
+        assert!(has_flag(spec.flags, MsFlags::MS_REC));
+        assert!(has_flag(spec.flags, MsFlags::from_bits_truncate(libc::MS_SILENT)));
+        assert!(!spec.try_only);
+    }
+
+    #[test]
+    fn test_tmpfs_mount_with_mode() {
+        // Mount tmpfs at sandbox /tmp with mode 0755
+        let spec = parse_mount_spec("tmpfs:/tmp:mode=0755").unwrap();
+        assert_eq!(spec.source, "tmpfs");
+        assert_eq!(spec.target, "@/tmp");
+        assert_eq!(spec.fs_type, "tmpfs");
+        assert_eq!(spec.options, Some("mode=0755".to_string()));
+        assert!(!spec.try_only);
+    }
+
+    #[test]
+    fn test_proc_mount() {
+        // Mount proc filesystem at sandbox /proc
+        let spec = parse_mount_spec("proc:/proc").unwrap();
+        assert_eq!(spec.source, "proc");
+        assert_eq!(spec.target, "@/proc");
+        assert_eq!(spec.fs_type, "proc");
+        assert!(!spec.try_only);
+    }
+
+    #[test]
+    fn test_remount_ro() {
+        // Remount existing mount as read-only
+        let spec = parse_mount_spec("remount:/sys/kernel/security:ro").unwrap();
+        assert_eq!(spec.source, "none");
+        assert_eq!(spec.target, "@/sys/kernel/security");
+        assert_eq!(spec.fs_type, "");
+        assert!(has_flag(spec.flags, MsFlags::MS_REMOUNT));
+        assert!(has_flag(spec.flags, MsFlags::MS_RDONLY));
+        assert!(!spec.try_only);
+    }
+
+    // Tests for various mount spec forms
+
+    #[test]
+    fn test_bind_mount_no_options() {
+        // Simple bind mount: source -> target
+        let spec = parse_mount_spec("/home:/home").unwrap();
+        assert_eq!(spec.source, "/home");
+        assert_eq!(spec.target, "@/home");
+        assert_eq!(spec.fs_type, "");
+        assert!(has_flag(spec.flags, MsFlags::MS_BIND));
+    }
+
+    #[test]
+    fn test_env_root_substitution_both() {
+        // env_root substitution for both source and target: @/usr://usr
+        let spec = parse_mount_spec("@/usr://usr").unwrap();
+        assert_eq!(spec.source, "@/usr");
+        assert_eq!(spec.target, "//usr");    // // prefix preserved for host path
+        assert_eq!(spec.fs_type, "");
+        assert!(has_flag(spec.flags, MsFlags::MS_BIND));
+    }
+
+    #[test]
+    fn test_bind_mount_with_at_target() {
+        // Bind mount with @ prefix target: /bin:@/usr/bin
+        let spec = parse_mount_spec("/bin:@/usr/bin").unwrap();
+        assert_eq!(spec.source, "/bin");
+        assert_eq!(spec.target, "@/usr/bin");
+        assert_eq!(spec.fs_type, "");
+        assert!(has_flag(spec.flags, MsFlags::MS_BIND));
+    }
+
+    #[test]
+    fn test_sysfs_mount() {
+        // sysfs filesystem mount
+        let spec = parse_mount_spec("sysfs:/sys").unwrap();
+        assert_eq!(spec.source, "sysfs");
+        assert_eq!(spec.target, "@/sys");
+        assert_eq!(spec.fs_type, "sysfs");
+    }
+
+    #[test]
+    fn test_devpts_mount() {
+        // devpts filesystem mount with options
+        let spec = parse_mount_spec("devpts:/dev/pts:newinstance,ptmxmode=0666").unwrap();
+        assert_eq!(spec.source, "devpts");
+        assert_eq!(spec.target, "@/dev/pts");
+        assert_eq!(spec.fs_type, "devpts");
+        let opts = spec.options.as_ref().unwrap();
+        assert!(opts.contains("newinstance"));
+        assert!(opts.contains("ptmxmode=0666"));
+    }
+
+    #[test]
+    fn test_mqueue_mount() {
+        // mqueue filesystem mount
+        let spec = parse_mount_spec("mqueue:/dev/mqueue").unwrap();
+        assert_eq!(spec.source, "mqueue");
+        assert_eq!(spec.target, "@/dev/mqueue");
+        assert_eq!(spec.fs_type, "mqueue");
+    }
+
+    #[test]
+    fn test_bind_mount_auto_source() {
+        // Auto-generated source (same as target): SANDBOX_DIR:OPTIONS
+        let spec = parse_mount_spec("/run:try").unwrap();
+        assert_eq!(spec.source, "/run");    // auto-generated from target
+        assert_eq!(spec.target, "@/run");
+        assert_eq!(spec.fs_type, "");
+        assert!(has_flag(spec.flags, MsFlags::MS_BIND));
+        assert!(spec.try_only);
+    }
+
+    #[test]
+    fn test_bind_mount_only_target() {
+        // Only SANDBOX_DIR specified (auto bind mount)
+        let spec = parse_mount_spec("/etc").unwrap();
+        assert_eq!(spec.source, "/etc");    // auto-generated
+        assert_eq!(spec.target, "@/etc");
+        assert_eq!(spec.fs_type, "");
+        assert!(has_flag(spec.flags, MsFlags::MS_BIND));
+    }
+
+    #[test]
+    fn test_propagation_make_slave() {
+        // Propagation-only mount: make-slave
+        let spec = parse_mount_spec("make-slave:/oldroot").unwrap();
+        assert_eq!(spec.source, "none");
+        assert_eq!(spec.target, "@/oldroot");
+        assert_eq!(spec.fs_type, "");
+        assert!(has_flag(spec.flags, MsFlags::MS_SLAVE));
+    }
+
+    #[test]
+    fn test_propagation_make_rprivate() {
+        // Propagation-only mount with recursive: make-rprivate
+        let spec = parse_mount_spec("make-rprivate:/oldroot").unwrap();
+        assert_eq!(spec.source, "none");
+        assert_eq!(spec.target, "@/oldroot");
+        assert_eq!(spec.fs_type, "");
+        assert!(has_flag(spec.flags, MsFlags::MS_PRIVATE));
+        assert!(has_flag(spec.flags, MsFlags::MS_REC));
+    }
+
+    #[test]
+    fn test_none_as_source() {
+        // Explicit "none" as source (for propagation mounts)
+        let spec = parse_mount_spec("none:/run:user").unwrap();
+        assert_eq!(spec.source, "none");
+        assert_eq!(spec.target, "@/run");
+        assert_eq!(spec.fs_type, "");
+        // No bind flag when source is "none" and type is explicitly set
+    }
+
+    #[test]
+    fn test_json_format() {
+        // JSON format parsing
+        let spec = parse_mount_spec("{\"source\":\"/usr\",\"target\":\"@/usr\",\"fs_type\":\"\",\"flags\":4096}").unwrap();
+        assert_eq!(spec.source, "/usr");
+        assert_eq!(spec.target, "@/usr");
+        assert_eq!(spec.fs_type, "");
+        assert_eq!(spec.flags, 4096);    // MS_BIND = 4096
+    }
+
+    #[test]
+    fn test_multiple_options() {
+        // Multiple options combined
+        let spec = parse_mount_spec("/opt:/opt:ro,nosuid,nodev,noexec,try").unwrap();
+        assert_eq!(spec.source, "/opt");
+        assert_eq!(spec.target, "@/opt");
+        assert!(has_flag(spec.flags, MsFlags::MS_RDONLY));
+        assert!(has_flag(spec.flags, MsFlags::MS_NOSUID));
+        assert!(has_flag(spec.flags, MsFlags::MS_NODEV));
+        assert!(has_flag(spec.flags, MsFlags::MS_NOEXEC));
+        assert!(spec.try_only);
+    }
+
+    #[test]
+    fn test_rbind_option() {
+        // rbind (recursive bind mount)
+        let spec = parse_mount_spec("/usr:/usr:rbind").unwrap();
+        assert_eq!(spec.source, "/usr");
+        assert_eq!(spec.target, "@/usr");
+        assert!(has_flag(spec.flags, MsFlags::MS_BIND));
+        assert!(has_flag(spec.flags, MsFlags::MS_REC));
+    }
+
+    // Error cases
+
+    #[test]
+    fn test_error_relative_path() {
+        // Relative path should error
+        let result = parse_mount_spec("relative/path:/target");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_error_relative_target() {
+        // Relative SANDBOX_DIR should error
+        let result = parse_mount_spec("relative");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_error_empty_target() {
+        // Empty SANDBOX_DIR should error
+        let result = parse_mount_spec("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_error_pseudo_fs_without_target() {
+        // Pseudo FS type without target should error
+        let result = parse_mount_spec("tmpfs:mode=0755");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_error_invalid_json() {
+        // Invalid JSON should error
+        let result = parse_mount_spec("{invalid json}");
+        assert!(result.is_err());
+    }
+
+    // Tests for static mount spec constants
+
+    #[test]
+    fn test_mount_specs_env() {
+        // Verify static mount specs parse correctly
+        for spec_str in MOUNT_SPECS_ENV {
+            let spec = parse_mount_spec(spec_str).unwrap();
+            assert!(!spec.target.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_mount_specs_fs() {
+        for spec_str in MOUNT_SPECS_FS {
+            let spec = parse_mount_spec(spec_str).unwrap();
+            assert!(!spec.target.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_devfs_mounts() {
+        for spec_str in DEVFS_MOUNTS {
+            let spec = parse_mount_spec(spec_str).unwrap();
+            assert!(!spec.target.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_sysfs_mounts_ro() {
+        for spec_str in SYSFS_MOUNTS_RO {
+            let spec = parse_mount_spec(spec_str).unwrap();
+            assert!(has_flag(spec.flags, MsFlags::MS_RDONLY));
+        }
+    }
+}

@@ -618,6 +618,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_strip_shebang() {
         // Script with shebang
         let script = "#!/usr/bin/env lua\nprint('Hello')";
