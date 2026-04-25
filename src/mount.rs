@@ -376,8 +376,22 @@ fn ensure_bind_target_exists(source: &PathBuf, target: &Path, isolate_mode: Isol
         return Ok(());
     }
 
-    // Get source metadata to determine file type
-    let metadata = match fs::symlink_metadata(source) {
+    // Get source metadata to determine file type.
+    //
+    // MUST use metadata() (follows symlinks) instead of symlink_metadata().
+    // This is critical for handling symlinks-to-directories correctly.
+    //
+    // Example case: ~/.epkg is a symlink to /data/epkg
+    //   source = /home/wfg/.epkg (symlink -> /data/epkg directory)
+    //   - symlink_metadata(source).is_dir() = false (symlink itself is NOT a directory)
+    //   - metadata(source).is_dir()         = true  (target IS a directory)
+    //
+    // Wrong action (symlink_metadata): create file placeholder at target
+    //   → bind mount fails: "target is file, source (resolved) is directory"
+    //
+    // Correct action (metadata): create directory placeholder at target
+    //   → bind mount succeeds: both source (resolved) and target are directories
+    let metadata = match fs::metadata(source) {
         Ok(md) => md,
         Err(_) => return Ok(()), // Cannot stat source, skip
     };
@@ -391,24 +405,18 @@ fn ensure_bind_target_exists(source: &PathBuf, target: &Path, isolate_mode: Isol
         }
     }
 
-    // Create appropriate placeholder
-    if metadata.is_file() {
-        trace!("Creating file placeholder for bind mount: {}", target.display());
-        if let Err(e) = lfs::file_create(target) {
-            warn!("Failed to create file placeholder for bind mount {}: {}. Continuing.", target.display(), e);
-        }
-    } else if metadata.is_dir() {
+    // Create appropriate placeholder based on resolved source type
+    if metadata.is_dir() {
         trace!("Creating directory placeholder for bind mount: {}", target.display());
         if let Err(e) = lfs::create_dir_all(target) {
             warn!("Failed to create directory placeholder for bind mount {}: {}. Continuing.", target.display(), e);
         }
-    }
-    // Other types (symlinks, device nodes, etc.) - create empty file as fallback
-    // Device nodes cannot be created without mknod capability; empty file works as bind mount target
-    else {
-        trace!("Creating empty file placeholder for special file bind mount: {}", target.display());
+    } else {
+        // Files, symlinks, device nodes, etc. - create empty file as placeholder
+        // Bind mount will work regardless of source type if target is a file
+        trace!("Creating file placeholder for bind mount: {}", target.display());
         if let Err(e) = lfs::file_create(target) {
-            warn!("Failed to create placeholder for special file bind mount {}: {}. Continuing.", target.display(), e);
+            warn!("Failed to create file placeholder for bind mount {}: {}. Continuing.", target.display(), e);
         }
     }
 
