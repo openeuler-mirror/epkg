@@ -63,6 +63,25 @@ pub fn get_gid_name(gid: u32) -> String {
     gid.to_string()
 }
 
+/// Check if we're running inside a VM (as init or child of init).
+/// Returns true if /proc/1/exe points to epkg/init (our VM init process).
+/// This is used to skip host-specific operations like session cleanup
+/// that don't work inside VM due to different PID namespace.
+#[cfg(target_os = "linux")]
+pub fn is_inside_vm() -> bool {
+    // Check if /proc/1/exe exists and points to a file named "init" or "epkg"
+    std::fs::read_link("/proc/1/exe")
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .map(|name| name == "init" || name == "epkg")
+        == Some(true)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn is_inside_vm() -> bool {
+    false // VM mode not available on non-Linux
+}
+
 // Applet invocation patterns:
 // 1. Direct symlink: ln -s /path/to/epkg whoami && ./whoami
 // 2. Via busybox multicall: epkg busybox whoami

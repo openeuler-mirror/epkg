@@ -128,6 +128,16 @@ pub fn discover_vm_session(env_name: &str) -> Result<Option<VmSessionInfo>> {
     };
 
     // Check if daemon process is still alive
+    // Skip check when running inside VM - daemon_pid is a HOST PID that doesn't exist in VM's PID namespace
+    #[cfg(target_os = "linux")]
+    if crate::busybox::is_inside_vm() {
+        // Inside VM, we can't verify host PIDs. Assume the session is valid if file exists.
+        // The session cleanup should only happen on host where daemon_pid is visible.
+        log::info!("vm_session: inside VM, assuming session {} is valid (can't verify host PID {})",
+                   env_name, info.daemon_pid);
+        return Ok(Some(info));
+    }
+
     if !is_process_alive(info.daemon_pid) {
         log::debug!("vm_session: daemon process {} is dead, cleaning up", info.daemon_pid);
         cleanup_vm_session_files(&session_file, &info.socket_path);
@@ -260,13 +270,22 @@ pub fn unregister_vm_session(env_name: &str) -> Result<()> {
 /// Clean up stale VM session files from crashed processes.
 /// Called at startup and during VM creation.
 pub fn cleanup_stale_vm_sessions() {
+    // Skip cleanup when running inside VM - we can't verify host PIDs from VM's PID namespace
+    // Session files are stored on host and visible via virtiofs, but daemon_pid is a HOST PID
+    // Inside VM, is_process_alive(host_pid) will fail because host processes aren't visible
+    #[cfg(target_os = "linux")]
+    if crate::busybox::is_inside_vm() {
+        log::info!("vm_session: skipping stale session cleanup - running inside VM");
+        return;
+    }
+
     let sessions_dir = crate::models::dirs().epkg_run.join("vm-sessions");
     if !sessions_dir.exists() {
         return;
     }
 
     if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
-        for entry in entries.flatten() {
+        for entry in entries.flat_map(Result::ok) {
             let path = entry.path();
             if path.extension() != Some(std::ffi::OsStr::new("json")) {
                 continue;

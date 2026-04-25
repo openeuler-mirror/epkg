@@ -142,12 +142,10 @@ pub fn execute_via_existing_vm(
 
     // For existing VM sessions (daemon mode), always use reuse_vm=true
     // and pass the session's configured timeout to keep the VM alive.
+    // Per guest_daemon.rs:1713-1716: timeout=0 means "never timeout"
+    // Pass Some(0) to guest, NOT None (which triggers default 30s timeout)
     let reuse_vm = true;
-    let vm_keep_timeout_secs = if session_info.config.timeout == 0 {
-        None  // 0 means never timeout, let guest use its default
-    } else {
-        Some(session_info.config.timeout)
-    };
+    let vm_keep_timeout_secs = Some(session_info.config.timeout);
 
     let exit_code = super::stream::send_command_over_stream(
         cmd_parts,
@@ -186,12 +184,10 @@ pub fn execute_via_existing_vm(
 
     // For existing VM sessions (daemon mode), always use reuse_vm=true
     // and pass the session's configured timeout to keep the VM alive.
+    // Per guest_daemon.rs:1713-1716: timeout=0 means "never timeout"
+    // Pass Some(0) to guest, NOT None (which triggers default 30s timeout)
     let reuse_vm = true;
-    let vm_keep_timeout_secs = if session_info.config.timeout == 0 {
-        None  // 0 means never timeout, let guest use its default
-    } else {
-        Some(session_info.config.timeout)
-    };
+    let vm_keep_timeout_secs = Some(session_info.config.timeout);
 
     let exit_code = super::stream::send_command_over_named_pipe(
         cmd_parts,
@@ -886,29 +882,24 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
             try_add_mount(&dirs().opt_epkg, None, false, true);
             // Tool config is at ~/.epkg/config/tool which is under home_epkg, already mounted.
         } else if is_guest_root {
-            // For non-root host + root guest: align mount with host's shared_store setting.
+            // For non-root host + root guest: use path consistency mounts (same paths as host).
             //
-            // Host non-root always has shared_store=false (can't write to /opt/epkg).
-            // To make guest's determine_shared_store() return correct value, mount to
-            // /root/.epkg so guest sees private layout.
+            // Per docs/zh/architecture/env-path.md, guest should see the same paths as host:
+            //   /home/wfg/.epkg → /home/wfg/.epkg (rw)
+            //   /home/wfg/.cache → /home/wfg/.cache (rw)
             //
-            // Guest root's determine_shared_store() checks:
-            // 1. is_root -> true (guest is root)
-            // 2. /opt/epkg/envs exists? -> false (we mount to /root/.epkg)
-            // 3. $HOME/.epkg/envs exists? -> true (we mount home_epkg to /root/.epkg)
-            // So returns false (private) correctly.
+            // This ensures:
+            // - Config paths (env.yaml) are valid in guest
+            // - Disk space checks work (virtiofs returns proper filesystem stats)
+            // - Install/remove operations can write to store
             //
-            // self env is then at user_envs/self = /root/.epkg/envs/self which exists.
-            // store is at /root/.epkg/store (mounted as part of home_epkg).
-            // Also mount store at original path for symlink resolution.
-            try_add_mount(&dirs().epkg_store, None, true, true);
-            try_add_mount(&dirs().home_epkg, Some(Path::new("/root/.epkg")), false, true);
-            // Mount home_epkg at original host path too, for symlink resolution.
-            // Tool config at ~/.epkg/config/tool uses symlinks pointing to home_epkg paths.
-            try_add_mount(&dirs().home_epkg, None, true, true);
-            // Mount cache separately since home_cache is outside home_epkg on macOS
-            try_add_mount(&dirs().home_cache, Some(Path::new("/root/.cache")), false, true);
-            // Tool config is at ~/.epkg/config/tool which is under home_epkg, already mounted.
+            // Guest root's determine_shared_store() will check /opt/epkg/envs (doesn't exist)
+            // and $HOME/.epkg/envs (exists via rw mount), returning false correctly.
+            //
+            // NOTE: The old design mounted home_epkg to /root/.epkg (rw) and original path ro.
+            // That broke path consistency and caused "available 0 B" disk space errors.
+            try_add_mount(&dirs().home_epkg, None, false, true);    // rw at original path
+            try_add_mount(&dirs().home_cache, None, false, true);    // rw at original path
         } else {
             // For non-root host + non-root guest: mount to same paths
             // The guest user will have the same UID as the host user (via virtiofs

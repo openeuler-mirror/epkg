@@ -2572,8 +2572,8 @@ fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
         }
     }
 
-    // Add --yes flag for non-interactive mode in VM
-    cmd_parts.push("--yes".to_string());
+    // Add --assume-yes flag for non-interactive mode in VM
+    cmd_parts.push("--assume-yes".to_string());
 
     // Execute via existing VM
     #[cfg(feature = "libkrun")]
@@ -2590,9 +2590,8 @@ fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
             crate::models::IoMode::Stream,
             Some(&env_vars),
             None, // cwd - epkg commands don't need specific working directory
-            false, // reuse_vm - vm run command doesn't need VM reuse
-        )?;
-        Ok(None)
+            false, // reuse_vm - ignored by execute_via_existing_vm which always uses true
+        )
     }
     #[cfg(not(feature = "libkrun"))]
     Err(eyre::eyre!("VM session routing requires libkrun feature"))

@@ -367,11 +367,9 @@ pub fn try_execute_via_existing_vm_session(
     }
 
     // Use session's configured timeout for vm_keep_timeout
-    let vm_keep_timeout_secs = if info.config.timeout == 0 {
-        None  // 0 means never timeout
-    } else {
-        Some(info.config.timeout)
-    };
+    // Per guest_daemon.rs:1713-1716: timeout=0 means "never timeout"
+    // Pass Some(0) to guest, NOT None (which triggers default 30s timeout)
+    let vm_keep_timeout_secs = Some(info.config.timeout);
 
     // Build request with env_vars and cwd
     let request = build_extended_command_request(
