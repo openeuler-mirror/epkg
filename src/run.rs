@@ -1129,8 +1129,30 @@ fn fork_and_execute_raw(env_root: &Path, run_options: &RunOptions) -> Result<Opt
                 log::info!("fork_and_execute_raw: vm_daemon mode - parent PID {} received VM ready signal",
                            std::process::id());
             }
+            Ok(0) => {
+                // EOF: child closed pipe without sending READY, meaning VM failed to start
+                log::error!("fork_and_execute_raw: vm_daemon mode - child exited before VM ready");
+                // Check if child has exited and reap it
+                match nix::sys::wait::waitpid(child_pid, Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
+                    Ok(nix::sys::wait::WaitStatus::Exited(_, exit_code)) => {
+                        return Err(eyre::eyre!("VM daemon child exited with code {} before VM was ready", exit_code));
+                    }
+                    Ok(nix::sys::wait::WaitStatus::Signaled(_, signal, _)) => {
+                        return Err(eyre::eyre!("VM daemon child killed by signal {} before VM was ready", signal));
+                    }
+                    Ok(_) => {
+                        // Child is still running but closed pipe - unexpected
+                        return Err(eyre::eyre!("VM daemon child closed pipe without sending READY"));
+                    }
+                    Err(_) => {
+                        return Err(eyre::eyre!("VM daemon child failed and pipe closed"));
+                    }
+                }
+            }
             Ok(n) => {
                 log::warn!("fork_and_execute_raw: vm_daemon mode - received unexpected signal: {} bytes", n);
+                // Treat any other response as failure
+                return Err(eyre::eyre!("VM daemon child sent unexpected response: {} bytes", n));
             }
             Err(e) => {
                 log::error!("fork_and_execute_raw: vm_daemon mode - failed to read ready signal: {}", e);

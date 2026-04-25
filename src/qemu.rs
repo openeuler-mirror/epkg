@@ -599,6 +599,23 @@ fn build_qemu_command(
             append_args.push_str(&format!(" epkg.rust_log={}", percent_encode(&rust_log)));
         }
     }
+
+    // Pass host user info for guest path computation using epkg.var.XXX format.
+    // This allows guest to compute correct paths when running in VM.
+    // When dirs() uses EPKG_USER/EPKG_HOME, it builds host-style paths like
+    // /home/wfg/.epkg which matches the bind mount targets.
+    append_args.push_str(" epkg.var.EPKG_HOST_OS=Linux");
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            append_args.push_str(&format!(" epkg.var.EPKG_HOME={}", percent_encode(&home)));
+        }
+    }
+    if let Ok(user) = std::env::var("USER") {
+        if !user.is_empty() {
+            append_args.push_str(&format!(" epkg.var.EPKG_USER={}", percent_encode(&user)));
+        }
+    }
+
     // Cmdline mode: pass command and working dir to init via kernel cmdline
     if let Some(cmd) = init_cmd {
         if !cmd.is_empty() {
