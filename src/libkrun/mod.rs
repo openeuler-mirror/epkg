@@ -129,11 +129,6 @@ pub use core::run_command_in_krun;
 #[cfg(feature = "libkrun")]
 pub use core::execute_via_existing_vm;
 
-/// Run VM in daemon mode for `epkg vm start` command.
-/// Creates VM, registers session, and blocks until VM shuts down.
-#[cfg(feature = "libkrun")]
-pub use core::run_vm_daemon_mode;
-
 /// End a VM reuse session after install/upgrade completes.
 /// Cleans up VM resources and unregisters the session.
 #[cfg(feature = "libkrun")]

@@ -492,6 +492,7 @@ fn build_libkrun_config(
         })
         .unwrap_or_else(|_| guest_cmd_path.to_string_lossy().to_string());
 
+    // Build guest command (for vm_daemon mode, guest_cmd_path is already /bin/true from vm_start())
     let (cmd_parts, init_cmd) = build_guest_command(Path::new(&guest_exec_path), &run_options.args)
         .map_err(|e| eyre::eyre!("Failed to build guest command: {}", e))?;
 
@@ -1678,10 +1679,6 @@ struct VmReuseSession {
 #[allow(dead_code)]
 static VM_REUSE_SESSION: Mutex<Option<VmReuseSession>> = Mutex::new(None);
 
-/// Context ID for daemon mode, used by SIGTERM handler to trigger shutdown
-#[cfg(feature = "libkrun")]
-static DAEMON_CTX_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
 #[cfg(feature = "libkrun")]
 fn apply_krun_exit_policy(exit_code: i32, run_options: &RunOptions) -> Result<()> {
     crate::debug_epkg!("libkrun: apply_krun_exit_policy called with exit_code={}", exit_code);
@@ -2208,6 +2205,7 @@ pub fn run_command_in_krun(
     // by namespace.rs before calling this function (via fork_and_execute_raw).
     // This function is called inside a namespace with CAP_SYS_ADMIN available.
 
+    // vm_daemon mode is handled inside build_libkrun_config (uses dummy command)
     crate::debug_epkg!("building config...");
     let config = build_libkrun_config(env_root, run_options, guest_cmd_path)?;
     crate::debug_epkg!("config built, use_vsock={}", config.use_vsock);
@@ -2340,6 +2338,35 @@ pub fn run_command_in_krun(
         .map_err(|e| eyre::eyre!("Failed to send command via vsock bridge: {}", e))?;
         log::debug!("libkrun: vsock command completed with exit code {}", exit_code);
 
+        // vm_daemon mode: keep VM alive, don't shutdown
+        if run_options.vm_daemon {
+            log::info!("libkrun: daemon mode - dummy command returned, VM is ready");
+            // Register VM session (if not already registered)
+            let env_name = &run_options.env_name;
+            crate::vm::register_vm_session_simple(env_root, env_name, &vsock_sock_path)?;
+
+            // Store session for reuse (same mechanism as reuse_vm)
+            #[cfg(not(target_os = "linux"))]
+            {
+                *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
+                    ctx_id,
+                    vsock_sock_path,
+                    vm_thread,
+                    env_root: env_root.to_path_buf(),
+                    env_name: env_name.clone(),
+                    #[cfg(unix)]
+                    reverse_listener: None,
+                });
+                log::debug!("libkrun: VM daemon session kept alive");
+            }
+            #[cfg(target_os = "linux")]
+            {
+                // On Linux, namespace.rs handles cleanup; just return without shutdown
+                log::debug!("libkrun: VM daemon mode on Linux, returning without shutdown");
+            }
+            return apply_krun_exit_policy(exit_code, run_options);
+        }
+
         if run_options.reuse_vm {
             #[cfg(not(target_os = "linux"))]
             {
@@ -2377,121 +2404,6 @@ pub fn run_command_in_krun(
     let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
 
     krun_no_vsock_join_vm_thread_exit(vm_thread, ctx_id);
-}
-
-/// Run VM in daemon/keeper mode.
-/// Creates VM, registers session, and blocks until VM shuts down (guest idle timeout).
-/// Used by `epkg vm start` to keep a VM alive for other processes to connect.
-#[cfg(feature = "libkrun")]
-pub fn run_vm_daemon_mode(
-    env_root: &Path,
-    env_name: &str,
-    timeout_secs: u32,
-    cpus: u32,
-    memory_mib: u32,
-) -> Result<()> {
-    log::info!("libkrun: starting VM in daemon mode for {} (timeout={}s)", env_name, timeout_secs);
-
-    // Build RunOptions for VM configuration
-    let run_options = crate::run::RunOptions {
-        vm_cpus: Some(cpus as u8),
-        vm_memory_mib: Some(memory_mib),
-        reuse_vm: true,  // Enable reuse mode
-        ..Default::default()
-    };
-
-    // Build config (no command needed for daemon mode)
-    let config = build_libkrun_config(env_root, &run_options, Path::new("/bin/true"))?;
-
-    // Create and configure VM
-    let vm_ctx = create_and_configure_vm(env_root, &run_options, &config)?;
-    let ctx_id = vm_ctx.ctx.ctx_id;
-    let vsock_sock_path = vm_ctx.vsock_sock_path.clone()
-        .ok_or_else(|| eyre::eyre!("libkrun: missing vsock socket path"))?;
-
-    log::info!("libkrun: VM configured for daemon mode (ctx_id={})", ctx_id);
-
-    // Register session IMMEDIATELY after VM configuration, before waiting for guest ready.
-    // This allows `vm start` parent to detect the session quickly (within 10s).
-    // The session file marks daemon_pid as running, so parent can return success.
-    let vm_config = crate::vm::VmConfig {
-        timeout: timeout_secs,
-        extend: timeout_secs,  // Use same value for extend
-        cpus,
-        memory_mib,
-        backend: "libkrun".to_string(),
-    };
-    crate::vm::register_vm_session(env_root, env_name, &vsock_sock_path, "libkrun", &vm_config)?;
-    log::info!("libkrun: VM daemon session registered (pending guest ready)");
-
-    // Setup ready listener
-    let env_hash = crate::utils::hash_env_root(env_root);
-    let ready_listener = super::bridge::setup_vsock_ready_listener(&env_hash)?
-        .ok_or_else(|| eyre::eyre!("libkrun: missing ready listener"))?;
-
-    // Start VM thread
-    let (start_failed_tx, start_failed_rx) = std::sync::mpsc::channel();
-    let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
-
-    // Wait for guest ready (platform-specific)
-    #[cfg(unix)]
-    let ready_result = super::bridge::wait_guest_ready_unix(&ready_listener, Some(&start_failed_rx));
-    #[cfg(windows)]
-    let ready_result = super::bridge::wait_guest_ready_windows(&ready_listener, Some(&start_failed_rx));
-    if let Err(e) = ready_result {
-        log::error!("libkrun: VM startup failed in daemon mode: {}", e);
-        // Cleanup session file on failure
-        let _ = crate::vm::unregister_vm_session(env_name);
-        let _ = unsafe { krun_signal_shutdown(ctx_id) };
-        let _ = vm_thread.join();
-        let _ = unsafe { krun_free_ctx(ctx_id) };
-        return Err(e);
-    }
-
-    log::info!("libkrun: guest ready in daemon mode, waiting for VM shutdown...");
-
-    // Setup SIGTERM handler to trigger libkrun shutdown
-    // This allows the host to request quick VM termination
-    let signal_result = std::panic::catch_unwind(|| {
-        #[cfg(unix)]
-        {
-            use nix::sys::signal::{signal, SigHandler, Signal};
-            extern "C" fn handle_sigterm(_sig: libc::c_int) {
-                // Signal the VM to shutdown
-                // Note: ctx_id is stored in DAEMON_CTX_ID static
-                let stored_ctx_id = DAEMON_CTX_ID.load(std::sync::atomic::Ordering::SeqCst);
-                if stored_ctx_id != 0 {
-                    let _ = unsafe { krun_signal_shutdown(stored_ctx_id) };
-                }
-            }
-            unsafe {
-                let _ = signal(Signal::SIGTERM, SigHandler::Handler(handle_sigterm));
-            }
-        }
-    });
-    if signal_result.is_err() {
-        log::warn!("libkrun: failed to setup SIGTERM handler");
-    }
-
-    // Store ctx_id for signal handler
-    DAEMON_CTX_ID.store(ctx_id, std::sync::atomic::Ordering::SeqCst);
-
-    // Wait for VM thread to complete (guest will shut down after idle timeout)
-    let status = vm_thread.join()
-        .map_err(|_| eyre::eyre!("VM thread panicked"))?;
-
-    // Clear ctx_id
-    DAEMON_CTX_ID.store(0, std::sync::atomic::Ordering::SeqCst);
-
-    log::info!("libkrun: VM daemon exited with status {}", status);
-
-    // Cleanup session
-    crate::vm::unregister_vm_session(env_name)?;
-
-    // Free context
-    unsafe { krun_free_ctx(ctx_id) };
-
-    Ok(())
 }
 
 /// Setup console output logging to a file for debugging kernel boot.
