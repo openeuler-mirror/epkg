@@ -161,6 +161,14 @@ pub struct RunOptions {
     /// When pivot_root changes the root filesystem, the original working directory
     /// becomes invalid. This field stores the path to restore after pivot.
     pub working_dir: Option<std::path::PathBuf>,
+
+    /// Environment name for VM session (used by `epkg vm start`).
+    pub env_name: String,
+
+    /// VM daemon mode: start VM with dummy command, wait for ready, then keep alive.
+    /// When true, command is replaced with dummy keepalive command.
+    /// VM continues running based on `vm_keep_timeout` after dummy command returns.
+    pub vm_daemon: bool,
 }
 
 /// Temporarily set SIGPIPE handler
@@ -657,6 +665,7 @@ fn prepare_and_create_process(
     env_root: &Path,
     run_options: &RunOptions,
     stdin_read_fd: Option<i32>,
+    vm_daemon_ready_fd: Option<std::os::fd::OwnedFd>,
 ) -> Result<(nix::unistd::Pid, PathBuf, ProcessCreationConfig)> {
     let cmd_path = resolve_command_path(env_root, run_options)?;
     let config = determine_process_config(env_root, run_options);
@@ -667,6 +676,7 @@ fn prepare_and_create_process(
         cmd_path.clone(),
         run_options.args.clone(),
         stdin_read_fd,
+        vm_daemon_ready_fd,
     )?;
 
     let child_pid = create_process_with_namespaces(&config, context)?;
@@ -1057,12 +1067,30 @@ fn fork_and_execute_raw(env_root: &Path, run_options: &RunOptions) -> Result<Opt
     let stdin_bytes = run_options.stdin.as_ref().map(|v| v.as_slice());
     let (mut stdin_read_fd_opt, stdin_write_fd_opt) = create_stdin_pipe_if_needed(run_options)?;
 
+    // For vm_daemon mode: create pipe for signaling VM readiness across namespace boundary
+    // - Child writes "READY" to pipe after dummy command returns (VM is running)
+    // - Parent reads from pipe to wait for VM ready before returning
+    // - This works because pipes are kernel objects, not filesystem files,
+    //   so they bypass mount namespace isolation
+    let (vm_daemon_ready_read_fd, vm_daemon_ready_write_fd) = if run_options.vm_daemon {
+        let (read_fd, write_fd) = nix::unistd::pipe()?;
+        log::debug!("fork_and_execute_raw: vm_daemon mode - created ready pipe read={}, write={}",
+                   read_fd.as_raw_fd(), write_fd.as_raw_fd());
+        (Some(read_fd), Some(write_fd))
+    } else {
+        (None, None)
+    };
+
     // Use shared helper to create process
     let (child_pid, cmd_path, _config) = prepare_and_create_process(
         env_root,
         run_options,
         stdin_read_fd_opt.as_ref().map(|fd| fd.as_raw_fd()),
+        vm_daemon_ready_write_fd,  // write_fd is moved to child context
     )?;
+
+    // Note: vm_daemon_ready_write_fd was moved into child context, no need to close in parent
+    // The child owns the write end of the pipe
 
     // Parent: close read end of stdin pipe and write data, if any
     if let (Some(bytes), Some(write_fd)) = (stdin_bytes, stdin_write_fd_opt) {
@@ -1089,6 +1117,27 @@ fn fork_and_execute_raw(env_root: &Path, run_options: &RunOptions) -> Result<Opt
             let _ = close(write_fd);
             Ok(())
         })?;
+    }
+
+    // For vm_daemon mode: wait for child to signal VM ready
+    if let Some(read_fd) = vm_daemon_ready_read_fd {
+        log::info!("fork_and_execute_raw: vm_daemon mode - parent PID {} waiting for VM ready signal, child_pid={}",
+                   std::process::id(), child_pid);
+        let mut buf = [0u8; 6]; // "READY\n" is 6 bytes
+        match nix::unistd::read(&read_fd, &mut buf) {
+            Ok(n) if n >= 5 && &buf[0..5] == b"READY" => {
+                log::info!("fork_and_execute_raw: vm_daemon mode - parent PID {} received VM ready signal",
+                           std::process::id());
+            }
+            Ok(n) => {
+                log::warn!("fork_and_execute_raw: vm_daemon mode - received unexpected signal: {} bytes", n);
+            }
+            Err(e) => {
+                log::error!("fork_and_execute_raw: vm_daemon mode - failed to read ready signal: {}", e);
+                return Err(eyre::eyre!("Failed to read VM ready signal: {}", e));
+            }
+        }
+        // read_fd is automatically closed when OwnedFd is dropped at end of block
     }
 
     if run_options.background {

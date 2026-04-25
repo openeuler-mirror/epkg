@@ -24,6 +24,9 @@ use color_eyre::eyre;
 use color_eyre::Result;
 use std::path::Path;
 
+#[cfg(target_os = "linux")]
+use std::os::fd::OwnedFd;
+
 use crate::run::RunOptions;
 
 /// Try VMM backends in specified order until one succeeds.
@@ -41,6 +44,8 @@ pub fn try_vmm_backends(
     vm_socket_path: Option<&Path>,
     vmm_order: &[String],
     vm_reuse_connect: bool,
+    #[cfg(target_os = "linux")] vm_daemon_ready_fd: Option<&OwnedFd>,
+    #[cfg(not(target_os = "linux"))] _vm_daemon_ready_fd: Option<&()>,
 ) -> Result<()> {
     #[cfg(target_os = "linux")]
     let _ = crate::qemu::ensure_vmm_log_dir();
@@ -65,10 +70,21 @@ pub fn try_vmm_backends(
                 }
             }
             "qemu" => {
-                if let Err(e) = try_qemu_backend(env_root, run_options, guest_command, vm_socket_path) {
-                    log::warn!("qemu backend failed, will try next VMM if any: {}", e);
-                    last_err = Some(e);
-                    continue;
+                #[cfg(target_os = "linux")]
+                {
+                    if let Err(e) = try_qemu_backend(env_root, run_options, guest_command, vm_socket_path, vm_daemon_ready_fd) {
+                        log::warn!("qemu backend failed, will try next VMM if any: {}", e);
+                        last_err = Some(e);
+                        continue;
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    if let Err(e) = try_qemu_backend(env_root, run_options, guest_command, vm_socket_path) {
+                        log::warn!("qemu backend failed, will try next VMM if any: {}", e);
+                        last_err = Some(e);
+                        continue;
+                    }
                 }
             }
             other => {
@@ -150,9 +166,10 @@ pub fn try_qemu_backend(
     run_options: &RunOptions,
     guest_command: &Path,
     vm_socket_path: Option<&Path>,
+    vm_daemon_ready_fd: Option<&OwnedFd>,
 ) -> Result<()> {
     log::debug!("Trying VMM backend: qemu");
-    match crate::qemu::run_command_in_qemu(env_root, run_options, guest_command, vm_socket_path) {
+    match crate::qemu::run_command_in_qemu(env_root, run_options, guest_command, vm_socket_path, vm_daemon_ready_fd) {
         Ok(()) => unreachable!("run_command_in_qemu never returns on success"),
         Err(e) => Err(e),
     }

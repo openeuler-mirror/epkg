@@ -7,6 +7,7 @@ use log::{debug, trace, warn};
 use nix::sched::{unshare, CloneFlags};
 use nix::unistd::{fork, geteuid, getuid, getgid, ForkResult, Gid, Uid, Pid};
 use std::fs;
+use std::os::fd::OwnedFd;
 
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -293,6 +294,8 @@ pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> Pr
     } else {
         run_options.effective_sandbox.namespace_strategy.unwrap_or(NamespaceStrategy::Clone)
     };
+    log::debug!("determine_process_config: isolate_mode={:?}, skip_namespace_isolation={}, namespace_strategy={:?}",
+               isolate_mode, skip_namespace_isolation, namespace_strategy);
 
     let namespace_flags = if skip_namespace_isolation {
         // No namespaces when isolation is skipped
@@ -389,6 +392,7 @@ pub fn build_unified_context(
     command: PathBuf,
     args: Vec<String>,
     stdin_read_fd: Option<i32>,
+    vm_daemon_ready_fd: Option<OwnedFd>,
 ) -> Result<UnifiedChildContext> {
     let uid = getuid();
     let gid = getgid();
@@ -462,6 +466,7 @@ pub fn build_unified_context(
         euid,
         user,
         vm_socket_path: None,
+        vm_daemon_ready_fd,
     })
 }
 
@@ -495,9 +500,11 @@ pub fn create_process_with_namespaces(
 
     match config.namespace_strategy {
         NamespaceStrategy::Unshare => {
+            log::debug!("create_process_with_namespaces: using Unshare strategy");
             create_process_via_unshare(config, context, id_sync)
         }
         NamespaceStrategy::Clone => {
+            log::debug!("create_process_with_namespaces: using Clone strategy");
             create_process_via_clone(config, context, id_sync)
         }
     }
@@ -751,6 +758,7 @@ fn setup_vm_sandbox(context: &UnifiedChildContext) -> Result<()> {
         context.vm_socket_path.as_deref(),
         &context.run_options.vmm_order,
         context.run_options.vm_reuse_connect,
+        context.vm_daemon_ready_fd.as_ref(),
     )
 }
 

@@ -180,6 +180,12 @@ pub fn cleanup_vm_session_files(session_file: &Path, socket_path: &Path) {
 /// Register a new VM session to the on-disk session file.
 /// Must be called after VM starts successfully.
 /// Used by both libkrun and qemu VMM backends on Linux.
+///
+/// Parameters:
+/// - daemon_pid: The PID of the process that supervises the VM (the namespace child for QEMU,
+///   or the current process for libkrun). This PID must be visible from the host.
+///   For QEMU VM daemon mode, this is the child PID returned by fork_and_execute(),
+///   NOT the parent PID (which exits after registering the session).
 #[cfg(any(feature = "libkrun", target_os = "linux"))]
 pub fn register_vm_session(
     env_root: &Path,
@@ -187,6 +193,7 @@ pub fn register_vm_session(
     socket_path: &Path,
     backend: &str,
     config: &VmConfig,
+    daemon_pid: u32,
 ) -> Result<()> {
     let session_dir = crate::models::dirs().epkg_run.join("vm-sessions");
     std::fs::create_dir_all(&session_dir)?;
@@ -196,11 +203,13 @@ pub fn register_vm_session(
         .unwrap_or_default()
         .as_secs();
 
+    log::debug!("register_vm_session: daemon_pid={}", daemon_pid);
+
     let session_info = VmSessionInfo {
         version: 2,
         env_name: env_name.to_string(),
         env_root: env_root.to_path_buf(),
-        daemon_pid: std::process::id(),
+        daemon_pid,
         socket_path: socket_path.to_path_buf(),
         backend: backend.to_string(),
         config: config.clone(),
@@ -218,10 +227,12 @@ pub fn register_vm_session(
 
 /// Simple registration for libkrun's existing path.
 /// Uses default config and takes env_name as parameter.
+/// For libkrun, the current process is the daemon (VM runs in-process), so we use std::process::id().
 #[cfg(feature = "libkrun")]
 pub fn register_vm_session_simple(env_root: &Path, env_name: &str, socket_path: &Path) -> Result<()> {
     let config = VmConfig::default();
-    register_vm_session(env_root, env_name, socket_path, "libkrun", &config)
+    let daemon_pid = std::process::id();
+    register_vm_session(env_root, env_name, socket_path, "libkrun", &config, daemon_pid)
 }
 
 /// Unregister a VM session (called when VM shuts down).

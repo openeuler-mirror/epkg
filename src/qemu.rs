@@ -789,7 +789,65 @@ fn handle_guest_execution(
     qemu_log_path: &std::path::Path,
     vm_keep_timeout: Option<u32>,
     user: Option<&str>,
+    vm_daemon: bool,
+    vm_daemon_ready_fd: Option<&std::os::fd::OwnedFd>,
 ) -> Result<i32> {
+    // Daemon mode: send command, get response, then wait for QEMU to complete
+    // The VM keeps running based on vm_keep_timeout
+    if use_vsock && vm_daemon {
+        let qemu_stderr_path = qemu_log_path.with_extension("stderr.log");
+        let reuse_session = vm_keep_timeout.is_some();
+
+        match client::wait_ready_and_send_command_with_qemu(
+            cmd_parts,
+            io_mode,
+            10000,
+            None,
+            reuse_session,
+            vm_keep_timeout,
+            user,
+            qemu_child,
+            &qemu_stderr_path,
+        ) {
+            Ok(_cmd_exit_code) => {
+                log::info!("qemu: daemon mode - dummy command returned, VM is ready");
+
+                // Signal parent via pipe that VM is ready
+                // This is critical for cross-namespace coordination:
+                // The session file would be invisible to parent (created after MS_PRIVATE),
+                // so we use a pipe (kernel object, not filesystem file) to signal readiness.
+                if let Some(fd) = vm_daemon_ready_fd {
+                    let signal = b"READY\n";
+                    match nix::unistd::write(fd, signal) {
+                        Ok(n) if n == signal.len() => {
+                            log::info!("qemu: daemon mode - signaled VM ready to parent via pipe");
+                        }
+                        Ok(n) => {
+                            log::warn!("qemu: daemon mode - partial write to ready pipe: {} bytes", n);
+                        }
+                        Err(e) => {
+                            log::error!("qemu: daemon mode - failed to write to ready pipe: {}", e);
+                        }
+                    }
+                }
+
+                // Return 0 to signal VM ready, but DON'T wait for QEMU here
+                // The cleanup_rootfs and exit will happen after we return
+                // QEMU continues running based on vm_keep_timeout
+                return Ok(0);  // Return 0 to signal success
+            }
+            Err(e) => {
+                if let Err(kill_err) = qemu_child.kill() {
+                    log::debug!("Failed to kill QEMU process: {}", kill_err);
+                }
+                if let Err(wait_err) = qemu_child.wait() {
+                    log::debug!("Failed to wait for QEMU process: {}", wait_err);
+                }
+                return Err(e);
+            }
+        }
+    }
+
     if use_vsock {
         // Vsock control plane: wait for guest ready, then connect to command port.
         // QEMU uses AF_VSOCK, so pass None for unix_socket_path.
@@ -927,7 +985,9 @@ pub fn run_command_in_qemu(
     run_options: &RunOptions,
     guest_cmd_path: &Path,
     existing_socket_path: Option<&Path>,
+    vm_daemon_ready_fd: Option<&std::os::fd::OwnedFd>,
 ) -> Result<()> {
+    // For vm_reuse_connect, connect to existing VM session
     if run_options.vm_reuse_connect {
         let (cmd_parts, _) = build_guest_command(guest_cmd_path, &run_options.args)?;
         let code = client::send_command_to_running_qemu_guest(
@@ -941,7 +1001,8 @@ pub fn run_command_in_qemu(
 
     let setup = setup_qemu_vm(env_root, run_options, existing_socket_path)?;
 
-    let (cmd_parts, init_cmd) = build_guest_command(&guest_cmd_path, &run_options.args)?;
+    // Build guest command (for vm_daemon mode, guest_cmd_path is already /bin/true from vm_start())
+    let (cmd_parts, init_cmd) = build_guest_command(guest_cmd_path, &run_options.args)?;
     let use_cmdline_mode = std::env::var("EPKG_VM_NO_DAEMON").is_ok();
     let use_vsock = !use_cmdline_mode;
     let use_control_channel = false;
@@ -976,179 +1037,26 @@ pub fn run_command_in_qemu(
         &setup.qemu_log_path,
         run_options.vm_keep_timeout,
         run_options.user.as_deref(),
+        run_options.vm_daemon,
+        vm_daemon_ready_fd,
     )?;
+
+    // For vm_daemon mode: child keeps running, waiting for QEMU to complete
+    // cleanup_rootfs and exit happen after QEMU exits (VM timeout)
+    if run_options.vm_daemon {
+        log::info!("qemu: daemon mode - waiting for QEMU to complete (VM timeout)");
+        // Wait for QEMU process to complete (VM will shut down after vm_keep_timeout)
+        let status = qemu_child.wait()
+            .map_err(|e| eyre::eyre!("Failed to wait for QEMU process: {}", e))?;
+        log::info!("qemu: VM daemon exited with status {:?}", status);
+        cleanup_rootfs(setup.rootfs_mode);
+        // Exit with 0 (success)
+        std::process::exit(0);
+    }
 
     cleanup_rootfs(setup.rootfs_mode);
 
     std::process::exit(exit_code);
-}
-
-/// Run QEMU in daemon/keeper mode.
-/// Creates QEMU process, registers session, and blocks until VM shuts down (guest idle timeout).
-/// Used by `epkg vm start` to keep a VM alive for other processes to connect.
-pub fn run_qemu_daemon_mode(
-    env_root: &Path,
-    env_name: &str,
-    timeout_secs: u32,
-    cpus: u32,
-    memory_mib: u32,
-) -> Result<()> {
-    log::info!("qemu: starting VM in daemon mode for {} (timeout={}s)", env_name, timeout_secs);
-
-    let run_options = RunOptions {
-        vm_cpus: Some(cpus as u8),
-        vm_memory_mib: Some(memory_mib),
-        reuse_vm: true,
-        ..Default::default()
-    };
-    let setup = setup_qemu_vm(env_root, &run_options, None)?;
-
-    let mut qemu_child = spawn_qemu(
-        &setup.kernel,
-        &setup.initrd,
-        &setup.qemu_bin,
-        &setup.rootfs_mode,
-        env_root,
-        &setup.mount_tag,
-        true, // use_vsock
-        &setup.extra_qemu_args,
-        &setup.qemu_log_path,
-        cpus as u8,
-        memory_mib,
-        None,  // no init_cmd for daemon mode
-        None,  // no init_user
-    )?;
-
-    log::info!("qemu: VM process spawned (pid={}), waiting for guest ready...", qemu_child.id());
-
-    // Wait for guest ready on vsock port 10001
-    let qemu_stderr_path = setup.qemu_log_path.with_extension("stderr.log");
-    let ready_result = wait_guest_ready_vsock(&mut qemu_child, &qemu_stderr_path);
-
-    if let Err(e) = ready_result {
-        log::error!("qemu: VM startup failed in daemon mode: {}", e);
-        let _ = qemu_child.kill();
-        let _ = qemu_child.wait();
-        cleanup_rootfs(setup.rootfs_mode);
-        return Err(e);
-    }
-
-    log::info!("qemu: guest ready in daemon mode");
-
-    // Register VM session (use vsock address format)
-    let socket_path = std::path::PathBuf::from("vsock:3");
-    let vm_config = crate::vm::VmConfig {
-        timeout: timeout_secs,
-        extend: timeout_secs,
-        cpus,
-        memory_mib,
-        backend: "qemu".to_string(),
-    };
-    crate::vm::register_vm_session(env_root, env_name, &socket_path, "qemu", &vm_config)?;
-
-    log::info!("qemu: VM daemon session registered, waiting for VM shutdown...");
-
-    // Wait for QEMU process to complete
-    let status = qemu_child.wait()
-        .map_err(|e| eyre::eyre!("Failed to wait for QEMU process: {}", e))?;
-
-    log::info!("qemu: VM daemon exited with status {:?}", status);
-
-    // Cleanup
-    crate::vm::unregister_vm_session(env_name)?;
-    cleanup_rootfs(setup.rootfs_mode);
-
-    Ok(())
-}
-
-/// Wait for QEMU guest to signal ready on vsock port 10001.
-fn wait_guest_ready_vsock(
-    qemu_child: &mut std::process::Child,
-    qemu_stderr_path: &std::path::Path,
-) -> Result<()> {
-    use nix::sys::socket::{socket, bind, listen, accept, AddressFamily, SockType, SockFlag, VsockAddr};
-    use std::os::fd::IntoRawFd;
-
-    const READY_PORT: u32 = 10001;
-    const POLL_TIMEOUT_MS: u32 = 100;
-    const MAX_WAIT_MS: u32 = 60000;
-
-    log::debug!("qemu_daemon: creating AF_VSOCK listener on ready port {}", READY_PORT);
-
-    let ready_fd = socket(
-        AddressFamily::Vsock,
-        SockType::Stream,
-        SockFlag::SOCK_CLOEXEC,
-        None,
-    ).map_err(|e| eyre::eyre!("Failed to create ready vsock socket: {}", e))?;
-
-    let ready_addr = VsockAddr::new(libc::VMADDR_CID_ANY, READY_PORT);
-    let raw_fd = ready_fd.into_raw_fd();
-    bind(raw_fd, &ready_addr)
-        .map_err(|e| eyre::eyre!("Failed to bind ready vsock port: {}", e))?;
-    listen(unsafe { &std::os::fd::BorrowedFd::borrow_raw(raw_fd) }, nix::sys::socket::Backlog::new(1)?)
-        .map_err(|e| eyre::eyre!("Failed to listen on ready vsock port: {}", e))?;
-
-    log::debug!("qemu_daemon: waiting for guest to connect to ready port {}...", READY_PORT);
-
-    let mut total_waited_ms: u32 = 0;
-
-    // Use libc poll directly (same pattern as vm/client.rs)
-    let client_fd = loop {
-        // Check if QEMU has exited prematurely
-        match qemu_child.try_wait() {
-            Ok(Some(status)) => {
-                let error_msg = std::fs::read_to_string(qemu_stderr_path).unwrap_or_default();
-                let exit_info = status.code()
-                    .map(|c| format!("exit code {}", c))
-                    .unwrap_or_else(|| "killed by signal".to_string());
-                return Err(eyre::eyre!("QEMU exited prematurely with {}: {}", exit_info, error_msg));
-            }
-            Ok(None) => {} // Still running
-            Err(e) => {
-                log::warn!("Failed to check QEMU status: {}", e);
-            }
-        }
-
-        // Use libc::poll directly
-        let mut pfd = [libc::pollfd {
-            fd: raw_fd,
-            events: libc::POLLIN,
-            revents: 0,
-        }];
-        let ready = unsafe { libc::poll(pfd.as_mut_ptr(), 1, POLL_TIMEOUT_MS as i32) };
-
-        total_waited_ms += POLL_TIMEOUT_MS;
-        if total_waited_ms > MAX_WAIT_MS {
-            return Err(eyre::eyre!("Timeout waiting for guest to connect to ready port"));
-        }
-
-        match ready {
-            0 => {
-                log::trace!("qemu_daemon: poll timeout, continuing to wait...");
-                continue;
-            }
-            n if n > 0 => {
-                if (pfd[0].revents & libc::POLLIN) != 0 {
-                    break accept(raw_fd)
-                        .map_err(|e| eyre::eyre!("Failed to accept on ready vsock port: {}", e))?;
-                }
-                if (pfd[0].revents & (libc::POLLERR | libc::POLLHUP)) != 0 {
-                    return Err(eyre::eyre!("Ready socket error during poll"));
-                }
-            }
-            _ => {
-                continue;
-            }
-        }
-    };
-
-    log::debug!("qemu_daemon: guest connected to ready port, guest is ready!");
-
-    let _ = nix::unistd::close(client_fd);
-    let _ = nix::unistd::close(raw_fd);
-
-    Ok(())
 }
 
 /// Percent-encode a string for kernel command line transmission

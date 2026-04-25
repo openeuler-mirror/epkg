@@ -1,11 +1,16 @@
 //! VM start command implementation.
+//!
+//! Unified for all platforms (Unix, Windows, macOS) using fork_and_execute()
+//! with vm_daemon mode. The VM daemon mode sends a dummy command to VM,
+//! waits for response (VM ready), then parent registers session.
+//!
+//! On Linux, uses a pipe to signal VM readiness across namespace boundary.
 
 use std::path::Path;
 use color_eyre::{Result, eyre};
 use clap::ArgMatches;
 
 use super::session::{VmConfig, discover_vm_session};
-use super::keeper::run_vm_keeper;
 
 /// Parse key=value arguments into VmConfig.
 fn parse_kv_args(args: Option<clap::parser::ValuesRef<String>>, vmm: Option<&str>) -> VmConfig {
@@ -55,120 +60,56 @@ fn parse_kv_args(args: Option<clap::parser::ValuesRef<String>>, vmm: Option<&str
     config
 }
 
-/// Get the pending creation file path for an env_name.
-/// This is used to coordinate between parent and child processes on Windows.
-fn pending_file_path(env_name: &str) -> std::path::PathBuf {
-    crate::models::dirs().epkg_run.join(format!("vm-pending-{}.json", env_name))
-}
+/// Start VM using fork_and_execute with daemon mode.
+/// Unified for all platforms (Unix, Windows, macOS).
+fn vm_start(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()> {
+    use crate::run::{RunOptions, fork_and_execute};
+    use crate::models::{SandboxOptions, IsolateMode};
 
-/// Write pending creation file with config.
-#[cfg(windows)]
-fn write_pending_config(env_name: &str, config: &VmConfig) -> Result<()> {
-    let pending_file = pending_file_path(env_name);
-    let content = serde_json::to_string_pretty(config)?;
-    std::fs::write(&pending_file, content)?;
-    Ok(())
-}
-
-/// Read and delete pending creation file.
-fn read_and_delete_pending_config(env_name: &str) -> Result<Option<VmConfig>> {
-    let pending_file = pending_file_path(env_name);
-    if !pending_file.exists() {
-        return Ok(None);
-    }
-    let content = std::fs::read_to_string(&pending_file)?;
-    let config: VmConfig = serde_json::from_str(&content)?;
-    let _ = std::fs::remove_file(&pending_file);
-    Ok(Some(config))
-}
-
-/// Wait for VM session to be ready.
-/// Uses short timeout since session file is created immediately by child process.
-fn wait_for_session_ready(_env_root: &Path, env_name: &str, timeout_secs: u32) -> Result<()> {
-    let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(timeout_secs as u64);
-
-    while start.elapsed() < timeout {
-        if discover_vm_session(env_name)?.is_some() {
-            return Ok(());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    // Check if VM already running
+    if discover_vm_session(env_name)?.is_some() {
+        return Err(eyre::eyre!("VM already running for {}", env_name));
     }
 
-    // Cleanup pending file on timeout
-    let _ = std::fs::remove_file(&pending_file_path(env_name));
-    Err(eyre::eyre!("Timeout waiting for VM session to be ready"))
-}
+    let sandbox = SandboxOptions {
+        isolate_mode: Some(IsolateMode::Vm),
+        ..Default::default()
+    };
 
-/// Start VM keeper on Unix using fork().
-#[cfg(unix)]
-fn vm_start_unix(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()> {
-    match unsafe { libc::fork() } {
-        0 => {
-            // Child process: become session leader to detach from parent
-            let _ = nix::unistd::setsid();
+    // Daemon mode: command is /bin/true, vm_daemon flag signals special handling
+    let run_options = RunOptions {
+        env_name: env_name.to_string(),
+        command: "/bin/true".to_string(),          // Dummy command for daemon mode
+        args: vec![],                              // No args
+        sandbox: sandbox.clone(),
+        effective_sandbox: sandbox,
+        vm_daemon: true,                           // Signal daemon mode to downstream
+        vm_keep_timeout: Some(config.timeout),     // Keep VM alive after dummy command
+        vm_cpus: Some(config.cpus as u8),
+        vm_memory_mib: Some(config.memory_mib),
+        vmm_order: vec![config.backend.clone()],
+        background: true,                           // Parent returns immediately, child keeps VM alive
+        ..Default::default()
+    };
 
-            // Detach from controlling terminal by redirecting stdio to /dev/null
-            // This prevents QEMU kernel output from leaking to the host terminal
-            let devnull = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open("/dev/null")
-                .ok();
-            if let Some(dn) = devnull {
-                use std::os::fd::AsRawFd;
-                let null_fd = dn.as_raw_fd();
-                unsafe {
-                    libc::dup2(null_fd, 0);  // stdin
-                    libc::dup2(null_fd, 1);  // stdout
-                    libc::dup2(null_fd, 2);  // stderr
-                }
-            }
+    log::info!("vm_start: starting VM daemon for {} (backend={}, timeout={}s)",
+               env_name, config.backend, config.timeout);
 
-            // Run keeper logic
-            if let Err(e) = run_vm_keeper(env_root, env_name, config) {
-                log::error!("VM keeper failed: {}", e);
-            }
+    // fork_and_execute handles:
+    // - Linux: namespace setup + bind mounts + QEMU/libkrun
+    // - macOS/Windows: direct libkrun with virtiofs mounts
+    // When dummy command returns with exit code 0, VM is ready
+    // Returns Some(child_pid) for background mode - this is the PID that supervises the VM
+    let child_pid = fork_and_execute(env_root, &run_options)?;
 
-            // Exit child process
-            std::process::exit(0);
-        }
-        pid if pid > 0 => {
-            // Parent process: wait for session ready
-            // Short timeout (10s) - child creates session file immediately after fork
-            wait_for_session_ready(env_root, env_name, 10)?;
-        }
-        _ => {
-            return Err(eyre::eyre!("fork() failed"));
-        }
-    }
+    // Register session with child PID (the process that supervises QEMU)
+    // Note: The parent process (calling register_vm_session) will exit soon,
+    // but the child (child_pid) continues to supervise the VM.
+    let socket_path = std::path::PathBuf::from("vsock:3");
+    let daemon_pid = child_pid.map(|p| p as u32).unwrap_or_else(std::process::id);
+    crate::vm::register_vm_session(env_root, env_name, &socket_path, "qemu", &config, daemon_pid)?;
 
-    Ok(())
-}
-
-/// Start VM keeper on Windows using spawn.
-#[cfg(windows)]
-fn vm_start_windows(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()> {
-    use std::os::windows::process::CommandExt;
-
-    // Write pending file for child process to detect BEFORE spawning
-    // This prevents recursion - child checks pending file and runs keeper directly
-    write_pending_config(env_name, &config)?;
-
-    let exe = std::env::current_exe()?;
-
-    // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-    const DETACHED_FLAGS: u32 = 0x00000008 | 0x00000200;
-
-    std::process::Command::new(&exe)
-        .args(["vm", "start", env_name])
-        .creation_flags(DETACHED_FLAGS)
-        .spawn()?;
-
-    // Parent: wait for session ready
-    // Short timeout (10s) - child creates session file immediately after spawn
-    wait_for_session_ready(env_root, env_name, 10)?;
-
+    log::info!("vm_start: VM session registered for {} (daemon_pid={})", env_name, daemon_pid);
     Ok(())
 }
 
@@ -182,27 +123,12 @@ pub fn cmd_vm_start(args: &ArgMatches) -> Result<()> {
         std::path::PathBuf::from(&cfg.common.env_root)
     };
 
-    // Check for pending creation file (Windows child process path)
-    // This indicates we're the spawned keeper process
-    if let Some(config) = read_and_delete_pending_config(&env_name)? {
-        return run_vm_keeper(&env_root, &env_name, config);
-    }
-
-    // Normal mode: check if VM already running
-    if discover_vm_session(&env_name)?.is_some() {
-        return Err(eyre::eyre!("VM already running for {}", env_name));
-    }
-
     // Parse key=value config with optional --vmm backend override
     let vmm = args.get_one::<String>("vmm").map(|s| s.as_str());
     let config = parse_kv_args(args.get_many::<String>("set"), vmm);
 
-    // Start keeper process
-    #[cfg(unix)]
-    vm_start_unix(&env_root, &env_name, config.clone())?;
-
-    #[cfg(windows)]
-    vm_start_windows(&env_root, &env_name, config.clone())?;
+    // Unified start for all platforms
+    vm_start(&env_root, &env_name, config.clone())?;
 
     let timeout_desc = if config.timeout == 0 {
         "never".to_string()

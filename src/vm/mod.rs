@@ -15,7 +15,6 @@ pub mod session;
 
 mod start;
 mod stop;
-mod keeper;
 mod list;
 mod status;
 
@@ -28,9 +27,9 @@ pub mod client;
 // Re-export session functions used by VM backends (libkrun, qemu)
 // Available on Linux (for qemu) or when libkrun feature is enabled
 #[cfg(any(feature = "libkrun", target_os = "linux"))]
-pub use session::{VmConfig, register_vm_session, unregister_vm_session};
+pub use session::{register_vm_session, unregister_vm_session};
 
-// These are only available/used with libkrun feature
+// These are only available/used with libkrun feature (also used by qemu on Linux)
 #[cfg(feature = "libkrun")]
 pub use session::{
     VmSessionInfo, discover_vm_session, register_vm_session_simple, vm_socket_path_for_env,

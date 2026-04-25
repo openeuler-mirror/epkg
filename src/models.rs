@@ -574,6 +574,12 @@ pub struct UnifiedChildContext {
     /// virtiofsd's setgroups() failing; see GitLab virtio-fs/virtiofsd#36).
     pub vm_socket_path: Option<PathBuf>,
 
+    /// VM daemon ready signaling pipe: write end for child to signal "VM ready" to parent.
+    /// Used when vm_daemon=true: child writes "READY" after dummy command returns,
+    /// parent reads from pipe and registers VM session (file must be in parent's namespace).
+    /// This bypasses the mount namespace isolation where child's files are invisible to parent.
+    pub vm_daemon_ready_fd: Option<OwnedFd>,
+
 }
 
 #[derive(Debug, Serialize, Deserialize)]

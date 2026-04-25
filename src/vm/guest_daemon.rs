@@ -1710,10 +1710,10 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                         debug_file_write(&format!("handle_connection: command completed with exit_code={}\n", exit_code));
 
                         if request.reuse_vm {
-                            // timeout=0 means "never timeout" - use ~1 year in ms
+                            // timeout=0 means "never timeout" - use 0 which triggers infinite poll
                             let idle_ms = request
                                 .vm_keep_timeout_secs
-                                .map(|s| if s == 0 { u32::MAX } else { s.saturating_mul(1000) })
+                                .map(|s| if s == 0 { 0 } else { s.saturating_mul(1000) })
                                 .unwrap_or(VM_REUSE_IDLE_TIMEOUT_MS);
                             let _ = kmsg_write("<6>handle_connection: reuse_vm=true, returning ReuseWait\n");
                             return Ok(ConnectionDisposition::ReuseWait {
@@ -1746,11 +1746,22 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
 }
 
 /// Poll the listen socket for readability, then accept. Returns `None` on idle timeout.
+/// Special handling: timeout_ms=0 means infinite wait (poll with -1).
 #[cfg(target_os = "linux")]
 fn accept_vsock_with_timeout(raw_fd: RawFd, timeout_ms: u32) -> Result<Option<RawFd>> {
     let borrowed = unsafe { BorrowedFd::borrow_raw(raw_fd) };
     let mut poll_fds = [PollFd::new(borrowed, PollFlags::POLLIN)];
-    match poll(&mut poll_fds, PollTimeout::try_from(timeout_ms).unwrap()) {
+
+    // Handle infinite timeout (0 means never timeout)
+    // poll() uses -1 for infinite wait, but PollTimeout::try_from() only handles positive values
+    // Cap very large timeouts to i32::MAX ms (~24 days) which is poll's maximum positive timeout
+    let poll_timeout = if timeout_ms == 0 || timeout_ms > i32::MAX as u32 {
+        PollTimeout::try_from(-1).unwrap() // Infinite wait
+    } else {
+        PollTimeout::try_from(timeout_ms as i32).unwrap()
+    };
+
+    match poll(&mut poll_fds, poll_timeout) {
         Ok(0) => Ok(None),
         Ok(_) => {
             let client_fd = socket::accept(raw_fd)
