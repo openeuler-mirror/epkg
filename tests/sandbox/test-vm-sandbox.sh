@@ -661,7 +661,9 @@ log "Test 18: PASSED"
 
 # Helper: get epkg run directory (XDG_RUNTIME_DIR based)
 get_epkg_run_dir() {
-    echo "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/epkg"
+    # Use ~/.epkg/run instead of XDG_RUNTIME_DIR
+    # This matches the code in dirs.rs which uses ~/.epkg/run for cross-namespace visibility
+    echo "${HOME}/.epkg/run"
 }
 
 # Helper: get session file path for an env

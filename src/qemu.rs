@@ -829,10 +829,27 @@ fn handle_guest_execution(
             Ok(_cmd_exit_code) => {
                 log::info!("qemu: daemon mode - dummy command returned, VM is ready");
 
-                // Signal parent via pipe that VM is ready
-                // This is critical for cross-namespace coordination:
-                // The session file would be invisible to parent (created after MS_PRIVATE),
-                // so we use a pipe (kernel object, not filesystem file) to signal readiness.
+                // Signal parent via pipe that VM is ready.
+                //
+                // PIPE SIGNALING vs SESSION FILE VISIBILITY:
+                // - Pipe: used for TIMING - parent waits for "READY" before registering session
+                // - Session file: created by PARENT (not child), so visibility is not the issue
+                //
+                // Why pipe (not session file polling) for timing:
+                // - Pipe is kernel object, no filesystem latency
+                // - Session file polling has race conditions and latency
+                // - Parent needs immediate notification to return success/failure
+                //
+                // Why only QEMU needs this (not libkrun):
+                // - libkrun: VM runs in same process, no namespace child
+                //           Session registered directly at line 2346 in libkrun/core.rs
+                // - QEMU: child enters mount namespace for bind mounts
+                //         Parent forks child, waits for READY, then registers session
+                //
+                // Cross-namespace session discovery (subsequent runs):
+                // - Session file at ~/.epkg/run/vm-sessions/ (under home_epkg)
+                // - home_epkg is bind-mounted, so file visible to child namespace
+                // - Child/other processes can discover existing VM session
                 if let Some(fd) = vm_daemon_ready_fd {
                     let signal = b"READY\n";
                     match nix::unistd::write(fd, signal) {

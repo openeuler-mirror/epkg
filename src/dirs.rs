@@ -141,11 +141,12 @@ impl EPKGDirs {
         };
 
         // Runtime dir for VM sockets and other ephemeral files
-        // Prefer $XDG_RUNTIME_DIR if available, otherwise fallback to $HOME/.epkg/run
-        let epkg_run = std::env::var("XDG_RUNTIME_DIR")
-            .ok()
-            .map(|p| PathBuf::from(p).join("epkg"))
-            .unwrap_or_else(|| PathBuf::from(&home).join(".epkg").join("run"));
+        // MUST use ~/.epkg/run (under home_epkg) instead of XDG_RUNTIME_DIR.
+        // Reason: home_epkg is bind-mounted in VM namespace, ensuring cross-namespace visibility.
+        // - Child creates session file at env_root/home/wfg/.epkg/run/vm-sessions/
+        // - Parent sees it at ~/.epkg/run/vm-sessions/ via bind mount
+        // - If using XDG_RUNTIME_DIR (/run/user/1000/epkg), files are invisible to parent
+        let epkg_run = PathBuf::from(&home).join(".epkg").join("run");
 
         Ok(Self {
             opt_epkg,

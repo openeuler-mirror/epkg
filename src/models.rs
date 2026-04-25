@@ -575,9 +575,38 @@ pub struct UnifiedChildContext {
     pub vm_socket_path: Option<PathBuf>,
 
     /// VM daemon ready signaling pipe: write end for child to signal "VM ready" to parent.
-    /// Used when vm_daemon=true: child writes "READY" after dummy command returns,
-    /// parent reads from pipe and registers VM session (file must be in parent's namespace).
-    /// This bypasses the mount namespace isolation where child's files are invisible to parent.
+    ///
+    /// FULL FLOW (QEMU VM daemon mode):
+    /// ```
+    /// PARENT (host namespace):
+    ///   1. fork_and_execute() creates pipe (read_fd, write_fd)
+    ///   2. Clone() forks child with write_fd
+    ///   3. Wait for "READY" on read_fd
+    ///   4. Register session at ~/.epkg/run/vm-sessions/env.json
+    ///   5. Return success
+    ///
+    /// CHILD (mount namespace):
+    ///   1. Enter mount namespace
+    ///   2. Apply bind mounts: host ~/.epkg → env_root/home/wfg/.epkg
+    ///   3. Start virtiofsd + QEMU
+    ///   4. Wait for guest ready (dummy command /bin/true returns)
+    ///   5. Write "READY" to write_fd (pipe, not filesystem)
+    ///   6. Loop: supervise QEMU, handle vm_keep_timeout
+    /// ```
+    ///
+    /// WHY PIPE (not session file):
+    /// - Pipe is kernel object, no filesystem latency/race conditions
+    /// - Parent needs immediate notification (timing), not just file visibility
+    /// - Session file is created by PARENT after receiving READY, not by child
+    ///
+    /// WHY ONLY QEMU (not libkrun):
+    /// - libkrun runs VM in same process, no namespace child
+    /// - libkrun registers session directly in main process (line 2346)
+    ///
+    /// SESSION FILE VISIBILITY (subsequent discovery):
+    /// - Location: ~/.epkg/run/vm-sessions/ (under home_epkg)
+    /// - home_epkg is bind-mounted, so child namespace sees host's files
+    /// - Other processes can discover existing VM session via this file
     pub vm_daemon_ready_fd: Option<OwnedFd>,
 
 }
