@@ -986,7 +986,9 @@ pub fn vm_mount_spec_strings() -> Vec<String> {
     // This ensures that when epkg exits, Linux automatically cleans up all mounts.
     spec_strings.push("make-rprivate://".to_string());
 
+    // Bind mount home_epkg/home_cache/opt_epkg under env_root so virtiofs exposes to guest
     add_epkg_mount_spec_strings(&mut spec_strings);
+
     // Mount host /lib/modules read-only for kernel module loading (e.g., virtio_net)
     // only when it actually exists on the host. Keep this best-effort and avoid
     // noisy mount failures on minimal systems where /lib/modules is absent.
@@ -1007,7 +1009,7 @@ pub fn vm_mount_spec_strings() -> Vec<String> {
 ///
 /// Detect Windows drives mounted under /mnt (like WSL2) and generate mount specs.
 /// This allows 'epkg.exe run' on Windows to automatically access C:, D:, etc.
-/// Returns mount specs like "/mnt/c:/mnt/c:try" for each drive letter found.
+/// Returns mount specs like "/mnt/c:try" for each drive letter found.
 fn windows_drive_mount_specs() -> Vec<String> {
     let mut specs = Vec::new();
     let mnt_path = std::path::Path::new("/mnt");
@@ -1047,7 +1049,8 @@ fn windows_drive_mount_specs() -> Vec<String> {
             continue;
         }
 
-        // Generate mount spec: /mnt/c:/mnt/c:try
+        // Generate mount spec: /mnt/c:try
+        // Parser auto-prepends '@' to target, binding to env_root/mnt/c
         let mount_path = format!("/mnt/{}", name_str);
         specs.push(format!("{}:try", mount_path));
         trace!("Added Windows drive mount spec: {}", mount_path);
@@ -1073,10 +1076,15 @@ fn add_epkg_bin_dir_mount(spec_strings: &mut Vec<String>) {
         return;
     }
 
-    spec_strings.push(format!("{}:ro", epkg_bin_dir.display().to_string()));
+    // Mount spec: SANDBOX_DIR:OPTIONS
+    // Parser auto-prepends '@' to target via normalize_target_path()
+    spec_strings.push(format!("{}:ro", epkg_bin_dir.display()));
 }
 
 fn add_epkg_mount_spec_strings(spec_strings: &mut Vec<String>) {
+    // Mount spec format: SANDBOX_DIR:OPTIONS
+    // Parser auto-prepends '@' to target via normalize_target_path(),
+    // so target becomes env_root/SANDBOX_DIR for both Fs and VM modes.
     spec_strings.push(format!("{}:try", dirs().home_epkg.display()));
     spec_strings.push(format!("{}:try", dirs().home_cache.display()));
     // Mount /opt/epkg read-only if we're not root on host.
