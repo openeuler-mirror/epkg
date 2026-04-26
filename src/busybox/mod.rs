@@ -149,6 +149,7 @@ pub fn is_inside_vm() -> bool {
     false
 }
 
+#[allow(dead_code)]
 #[cfg(not(target_os = "linux"))]
 pub fn is_inside_vm() -> bool {
     false // VM mode not available on non-Linux

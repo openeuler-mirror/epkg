@@ -197,6 +197,7 @@ pub fn cleanup_vm_session_files(session_file: &Path, socket_path: &Path) {
 ///   For QEMU VM daemon mode, this is the child PID returned by fork_and_execute(),
 ///   NOT the parent PID (which exits after registering the session).
 #[cfg(any(feature = "libkrun", target_os = "linux"))]
+#[allow(dead_code)] // Linux VM guest build may not call this
 pub fn register_vm_session(
     env_root: &Path,
     env_name: &str,
@@ -246,8 +247,9 @@ pub fn register_vm_session_simple(env_root: &Path, env_name: &str, socket_path: 
 }
 
 /// Unregister a VM session (called when VM shuts down).
-/// Used by both libkrun and qemu VMM backends on Linux.
+/// Used by libkrun VMM backend.
 #[cfg(any(feature = "libkrun", target_os = "linux"))]
+#[allow(dead_code)] // Linux VM guest build may not call this
 pub fn unregister_vm_session(env_name: &str) -> Result<()> {
     let session_file = vm_session_file_path(env_name);
     if session_file.exists() {

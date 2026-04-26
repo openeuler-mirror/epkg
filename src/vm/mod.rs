@@ -27,6 +27,7 @@ pub mod client;
 // Re-export session functions used by VM backends (libkrun, qemu)
 // Available on Linux (for qemu) or when libkrun feature is enabled
 #[cfg(any(feature = "libkrun", target_os = "linux"))]
+#[allow(dead_code, unused_imports)] // Linux VM guest build may not use these
 pub use session::{register_vm_session, unregister_vm_session};
 
 // These are only available/used with libkrun feature (also used by qemu on Linux)
