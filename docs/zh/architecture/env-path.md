@@ -172,43 +172,47 @@ let home_epkg = PathBuf::from(format!("/home/{}/.epkg", user));
 
 **注意**：这是配置传递，非用户意图
 
-## VM Guest 路径一致性方案
+## 路径一致性方案（所有模式）
+
+### 核心思想
+
+Mount host 路径到 sandbox/guest 的**相同路径**，而非映射到 root 的路径。
+这样 env.yaml 中的 `env_root` 主机路径在所有模式下都可访问，无需路径转换。
 
 ### 问题
 
-Host 和 VM guest 用户名不同，导致路径不同：
+在 Fs 模式（pivot_root）和 VM 模式（virtiofs）中，进程的 root 变为 env root，
+主机路径（如 `/home/wfg/.epkg/envs/xxx`）不再可直接访问。
 
-| Context | USER | HOME | home_epkg |
-|---------|------|------|-----------|
-| Host | wfg | /home/wfg | /home/wfg/.epkg |
-| Guest | root | /root | /root/.epkg |
+Env 模式（bind mounts）虽然主机文件系统仍然可见，但如果错误地将 `env_root`
+简化为 `/`，会导致 generation 写入主机的 `/generations/` tmpfs 而非 env 的
+generations 目录。
 
-配置文件存储的路径（如 `env_root: /home/wfg/.epkg/envs/xxx`）在 guest 中无效。
+### 解决：路径一致性 Mount
 
-### 方案：路径一致性 Mount
+在所有模式中将 `~/.epkg` 等主机路径 mount 到**相同路径**：
 
-**核心思想**：Mount host 路径到 guest 的**相同路径**，而非映射到 root 的路径。
+| 模式 | 实现 | 路径访问方式 |
+|------|------|-------------|
+| Env | 已隐式可见（主机文件系统未隔离） | 主机路径直接可用 |
+| Fs (pivot_root) | 先 bind mount 主机路径到 `$env_root/相同路径`，再 pivot_root | pivot_root 后 mount 保留 |
+| VM (virtiofs) | 先 bind mount 主机路径到 `$env_root/相同路径`，再通过 virtiofs 共享 | VM 内路径可用 |
 
-**实现**：
-```bash
-# vm.sh mount 配置
-# 将 host 的 ~/.epkg mount 到 guest 的相同路径
-$HOME/.epkg:/home/wfg/.epkg    # 相同路径！
-$HOME/.cache/epkg:/home/wfg/.cache
-```
-
-**配合 EPKG_USER**：
+**实现**（`src/namespace.rs` 中的 `add_epkg_mount_spec_strings()`)：
 ```rust
-// dirs.rs
-// 使用 EPKG_USER 计算 host 用户名
-let host_user = env::var("EPKG_USER").expect("EPKG_USER must be set in VM");
-let home_epkg = PathBuf::from(format!("/home/{}/.epkg", host_user));
+// 将主机路径 bind mount 到 env_root 下的相同路径
+/home/wfg/.epkg      : $env_root/home/wfg/.epkg      # 路径一致性！
+/home/wfg/.cache/epkg: $env_root/home/wfg/.cache/epkg
+/opt/epkg            : $env_root/opt/epkg
 ```
+
+Fs 模式 pivot_root 前执行这些 bind mount，pivot_root 后 mount 保留，路径仍然可访问。
+VM 模式 virtiofs 共享前执行这些 bind mount，VM 内路径仍然可访问。
 
 **结果**：
-- Guest 中 `/home/wfg/.epkg/envs/xxx` 存在（bind mounted）
-- 配置文件路径 `/home/wfg/.epkg/envs/xxx` 在 guest 中有效
-- 无需路径转换，无需 EPKG_ENV_ROOT
+- `env_root: /home/wfg/.epkg/envs/xxx` 在**所有模式**下有效
+- 代码只需使用 env.yaml 中的真实 `env_root`，无需简化为 `/`
+- 无需模式判断，无需路径转换，无需 EPKG_ENV_ROOT
 
 ### EPKG_ENV_ROOT 的作用
 
