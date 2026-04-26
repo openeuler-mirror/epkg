@@ -120,7 +120,9 @@ parse_run_args() {
                 ;;
             -t|--test)
                 [ $# -gt 1 ] || { echo "Missing value for $1" >&2; return 1; }
-                SELECT_TEST="$2"
+                # Normalize: strip .sh suffix and any directory prefix
+                v="$2"; v="${v%.sh}"; v="${v##*/}"
+                SELECT_TEST="$v"
                 shift 2
                 ;;
             *)
