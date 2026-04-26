@@ -1536,6 +1536,7 @@ pub fn config() -> ConfigGuard {
 
 /// Flags accepted by busybox package-manager shims (apt/apk/dnf).
 /// Applied atomically via [`apply_config_flags`].
+#[cfg(target_os = "linux")]
 #[derive(Default)]
 pub struct ConfigFlags {
     pub assume_yes: bool,
@@ -1546,6 +1547,7 @@ pub struct ConfigFlags {
 }
 
 /// Apply busybox flags to the global config atomically (single lock acquisition).
+#[cfg(target_os = "linux")]
 pub fn apply_config_flags(flags: &ConfigFlags) {
     if let Ok(mut guard) = CONFIG.write() {
         if let Some(ref mut config) = *guard {

@@ -741,7 +741,9 @@ fn build_libkrun_config(
 #[cfg(feature = "libkrun")]
 fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<(String, String, String, bool)> {
     use std::fs;
-    use crate::models::{dirs, config};
+    use crate::models::dirs;
+    #[cfg(not(target_os = "windows"))]
+    use crate::models::config;
 
     // TODO: On Linux, bind mounts should be performed before VM start,
     // then single virtiofs sharing env_root suffices.
@@ -826,6 +828,7 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
 
     // Add epkg system directories following path consistency rule.
     // All mounts are rw; permission control by host kernel.
+    #[cfg(not(target_os = "windows"))]
     let shared_store = config().init.shared_store;
 
     // On Windows, home_cache is inside home_epkg, opt_epkg uses different layout.
