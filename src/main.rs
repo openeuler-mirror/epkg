@@ -2587,6 +2587,7 @@ fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
             crate::models::IoMode::Stream,
             Some(&env_vars),
             None, // cwd - epkg commands don't need specific working directory
+            None, // stdin - vm session routing doesn need stdin
             false, // reuse_vm - ignored by execute_via_existing_vm which always uses true
         )
     }

@@ -131,6 +131,7 @@ pub fn execute_via_existing_vm(
     io_mode: crate::models::IoMode,
     env_vars: Option<&std::collections::HashMap<String, String>>,
     cwd: Option<&str>,
+    stdin: Option<&[u8]>,
     _reuse_vm: bool,
 ) -> Result<Option<i32>> {
     let (stream, session_info) = match connect_to_existing_vm_socket(env_root)? {
@@ -155,7 +156,7 @@ pub fn execute_via_existing_vm(
         None,  // extend_timeout_secs
         env_vars,
         cwd,
-        None,  // stdin - execute_via_existing_vm doesn't pass stdin
+        stdin,
         stream,
     )?;
 
@@ -174,6 +175,7 @@ pub fn execute_via_existing_vm(
     io_mode: crate::models::IoMode,
     env_vars: Option<&std::collections::HashMap<String, String>>,
     cwd: Option<&str>,
+    stdin: Option<&[u8]>,
     _reuse_vm: bool,
 ) -> Result<Option<i32>> {
     let (stream, session_info) = match connect_to_existing_vm_socket(env_root)? {
@@ -198,7 +200,7 @@ pub fn execute_via_existing_vm(
         None,  // extend_timeout_secs
         env_vars,
         cwd,
-        None,  // stdin - execute_via_existing_vm doesn't pass stdin
+        stdin,
         stream,
     )?;
 

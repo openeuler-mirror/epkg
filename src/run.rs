@@ -64,6 +64,7 @@ fn try_connect_and_execute_vm(env_root: &Path, run_options: &RunOptions) -> Resu
         run_options.io_mode,
         Some(&run_options.env_vars),
         cwd,
+        run_options.stdin.as_deref(),
         run_options.reuse_vm,
     )
 }
