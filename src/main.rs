@@ -1721,14 +1721,11 @@ fn apply_env_config_from_path(env_root_or_etc: &Path, config: &mut EPKGConfig) -
     // Only set in_env_root when we're inside the env (loading from /etc/epkg/env.yaml).
     // With -r PATH we're on the host; run must do namespace isolation so -r and -e are equivalent.
     config.common.in_env_root = env_root_or_etc == Path::new("/");
-    // When in_env_root=true, use "/" as env_root for all path lookups.
-    // This is critical for VM guest execution where VM rootfs = env_root,
-    // so all paths should be relative to "/" not the host path from env.yaml.
-    if config.common.in_env_root {
-        config.common.env_root = "/".to_string();
-    } else {
-        config.common.env_root = env_config_data.env_root.clone();
-    }
+    // Always use the real env_root from env.yaml. It is accessible in all modes:
+    // - Env mode (bind mounts): host filesystem visible directly
+    // - Fs mode (pivot_root): home_epkg bind-mounted before pivot_root (path consistency)
+    // - VM mode (virtiofs): home_epkg bind-mounted into env root before virtiofs share
+    config.common.env_root = env_config_data.env_root.clone();
     // Set ENV_CONFIG with the corrected env_root
     let env_config = models::EnvConfig {
         name:     env_config_data.name.clone(),
