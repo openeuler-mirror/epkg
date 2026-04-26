@@ -158,3 +158,15 @@ list_lang_tests() {
         echo "$(basename "$f" .sh)"
     done
 }
+
+# List of scene test names (scripts in scenes/*.sh)
+list_scene_tests() {
+    local dir
+    dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scenes"
+    local f
+    for f in "$dir"/*.sh; do
+        [ -f "$f" ] || continue
+        [ -x "$f" ] || continue
+        echo "$(basename "$f" .sh)"
+    done
+}

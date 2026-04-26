@@ -54,7 +54,17 @@ log "Starting dev-projects test (OS: ${SELECT_OS:-all}, test: ${SELECT_TEST:-all
 TIMEOUT_LANG=600
 FAILED=0
 FAILED_OS=""
-FAILED_LANG=""
+FAILED_TEST=""
+
+record_failure() {
+    local os="$1"
+    local test_name="$2"
+    if [ "$FAILED" -eq 0 ]; then
+        FAILED_OS="$os"
+        FAILED_TEST="$test_name"
+    fi
+    FAILED=1
+}
 
 for os in $ALL_OS; do
     should_run_os "$os" || continue
@@ -72,11 +82,18 @@ for os in $ALL_OS; do
         log "Running test $lang on $os (env=$ENV_NAME)"
         if ! run_with_timeout "$TIMEOUT_LANG" "$script"; then
             log "Test $lang failed for $os (env left for debug: $ENV_NAME)"
-            if [ "$FAILED" -eq 0 ]; then
-                FAILED_OS="$os"
-                FAILED_LANG="$lang"
-            fi
-            FAILED=1
+            record_failure "$os" "$lang"
+        fi
+    done
+
+    for scene in $(list_scene_tests); do
+        should_run_test "$scene" || continue
+        script="$SCRIPT_DIR/scenes/${scene}.sh"
+        [ -x "$script" ] || continue
+        log "Running scene test $scene on $os (env=$ENV_NAME)"
+        if ! run_with_timeout "$TIMEOUT_LANG" "$script"; then
+            log "Scene test $scene failed for $os (env left for debug: $ENV_NAME)"
+            record_failure "$os" "$scene"
         fi
     done
 
@@ -84,10 +101,6 @@ for os in $ALL_OS; do
 done
 
 if [ $FAILED -eq 1 ]; then
-    if [ -n "$FAILED_OS" ] && [ -n "$FAILED_LANG" ]; then
-        error "Lang test failed; reproduce with: $SCRIPT_DIR/run.sh -o $FAILED_OS -t $FAILED_LANG"
-    else
-        error "Lang test failed; reproduce with: $SCRIPT_DIR/run.sh $*"
-    fi
+    error "Test failed; reproduce with: $SCRIPT_DIR/run.sh -o $FAILED_OS -t $FAILED_TEST"
 fi
 log "All dev-projects tests passed"
