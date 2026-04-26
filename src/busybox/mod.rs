@@ -63,18 +63,90 @@ pub fn get_gid_name(gid: u32) -> String {
     gid.to_string()
 }
 
-/// Check if we're running inside a VM (as init or child of init).
-/// Returns true if /proc/1/exe points to epkg/init (our VM init process).
-/// This is used to skip host-specific operations like session cleanup
-/// that don't work inside VM due to different PID namespace.
+/// Check if we're running inside any kind of VM or container environment.
+/// This includes:
+/// - General VMs: VMware, VirtualBox, QEMU/KVM, Hyper-V, Xen, cloud VMs
+/// - WSL2 (Windows Subsystem for Linux)
+/// - Containers: systemd-nspawn (similar restrictions apply)
+///
+/// Returns true if running in any such environment.
+/// Used to refuse starting nested VMs and skip host-specific operations.
 #[cfg(target_os = "linux")]
 pub fn is_inside_vm() -> bool {
-    // Check if /proc/1/exe exists and points to a file named "init" or "epkg"
-    std::fs::read_link("/proc/1/exe")
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-        .map(|name| name == "init" || name == "epkg")
-        == Some(true)
+    // 1. Check DMI product name for common VM identifiers
+    // /sys/class/dmi/id/product_name contains vendor/product info
+    if let Ok(product) = std::fs::read_to_string("/sys/class/dmi/id/product_name") {
+        let product = product.trim();
+        // Common VM product names
+        if product.contains("VMware")
+            || product.contains("VirtualBox")
+            || product.contains("QEMU")
+            || product.contains("Bochs")
+            || product.contains("Virtual Machine")
+            || product.contains("Xen")
+            || product.starts_with("RHEV")  // Red Hat Enterprise Virtualization
+            || product.starts_with("KVM")
+        {
+            return true;
+        }
+    }
+
+    // 2. Check DMI sys_vendor for cloud/VM vendors
+    if let Ok(vendor) = std::fs::read_to_string("/sys/class/dmi/id/sys_vendor") {
+        let vendor = vendor.trim();
+        // Cloud and VM vendors
+        if vendor.contains("VMware")
+            || vendor.contains("innotek")  // VirtualBox
+            || vendor.contains("QEMU")
+            || vendor.contains("Amazon")   // AWS EC2
+            || vendor.contains("Google")   // Google Cloud
+            || vendor.contains("Microsoft") // Azure/Hyper-V
+            || vendor.contains("DigitalOcean")
+            || vendor.contains("Alibaba")
+            || vendor.contains("OpenStack")
+            || vendor.contains("Xen")
+        {
+            return true;
+        }
+    }
+
+    // 3. Check for WSL2 (Windows Subsystem for Linux)
+    // WSL2 runs in a real VM but appears as Linux
+    if let Ok(version) = std::fs::read_to_string("/proc/version") {
+        if version.contains("Microsoft") || version.contains("WSL") {
+            return true;
+        }
+    }
+
+    // 4. Check CPU flags for hypervisor detection
+    // - vmx (Intel VT-x) or svm (AMD-V): hardware virtualization support, indicates physical machine
+    // - hypervisor: indicates running under a hypervisor (VM)
+    // Physical machine: has vmx/svm, no hypervisor
+    // VM: no vmx/svm (unless nested virt), has hypervisor
+    if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
+        for line in cpuinfo.lines() {
+            if line.starts_with("flags") {
+                // If CPU has vmx or svm, this is a physical machine with virtualization support
+                if line.contains("vmx") || line.contains("svm") {
+                    return false;
+                }
+                // If CPU has hypervisor flag, we're inside a VM
+                if line.contains("hypervisor") {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // 5. Check systemd-nspawn container (not a VM but similar restrictions)
+    // In nspawn, /proc/1/cgroup shows machine scope
+    if let Ok(cgroup) = std::fs::read_to_string("/proc/1/cgroup") {
+        if cgroup.contains(".scope") && cgroup.contains("machine") {
+            return true;
+        }
+    }
+
+    false
 }
 
 #[cfg(not(target_os = "linux"))]

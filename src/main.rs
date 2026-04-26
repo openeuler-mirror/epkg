@@ -346,9 +346,6 @@ fn main() -> Result<()> {
 
     attach_session_log_under_epkg_cache();
 
-    // Clean up stale VM session files from crashed processes
-    crate::vm::session::cleanup_stale_vm_sessions();
-
     // Try to route install/upgrade/remove/restore commands via existing VM session.
     // This ensures data integrity by running these operations in the same VM context.
     {

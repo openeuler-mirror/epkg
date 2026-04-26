@@ -745,6 +745,17 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
         IsolateMode::Vm => {
             crate::debug_epkg!("fork_and_execute: starting for VM mode");
 
+            // Refuse to start nested VM - VM inside VM is not supported
+            // This includes epkg's own VM, WSL2, VirtualBox, cloud VMs, etc.
+            #[cfg(target_os = "linux")]
+            if crate::busybox::is_inside_vm() {
+                return Err(eyre::eyre!(
+                    "Nested VM not supported. Already running inside a VM or container.\n\
+                     VM sandbox (--isolate=vm) cannot be used inside WSL2, VirtualBox,\n\
+                     cloud VMs, or other virtualized environments."
+                ));
+            }
+
             // Check for existing VM session to reuse (cross-process discovery)
             // On Linux, this works for both QEMU and libkrun backends
             #[cfg(target_os = "linux")]

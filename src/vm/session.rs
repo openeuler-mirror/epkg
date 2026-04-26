@@ -267,44 +267,6 @@ pub fn unregister_vm_session(env_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Clean up stale VM session files from crashed processes.
-/// Called at startup and during VM creation.
-pub fn cleanup_stale_vm_sessions() {
-    // Skip cleanup when running inside VM - we can't verify host PIDs from VM's PID namespace
-    // Session files are stored on host and visible via virtiofs, but daemon_pid is a HOST PID
-    // Inside VM, is_process_alive(host_pid) will fail because host processes aren't visible
-    #[cfg(target_os = "linux")]
-    if crate::busybox::is_inside_vm() {
-        log::info!("vm_session: skipping stale session cleanup - running inside VM");
-        return;
-    }
-
-    let sessions_dir = crate::models::dirs().epkg_run.join("vm-sessions");
-    if !sessions_dir.exists() {
-        return;
-    }
-
-    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
-        for entry in entries.flat_map(Result::ok) {
-            let path = entry.path();
-            if path.extension() != Some(std::ffi::OsStr::new("json")) {
-                continue;
-            }
-
-            // Try to parse session file
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(info) = serde_json::from_str::<VmSessionInfo>(&content) {
-                    // Check if daemon process is alive
-                    if !is_process_alive(info.daemon_pid) {
-                        log::debug!("vm_session: cleaning up stale session for PID {}", info.daemon_pid);
-                        cleanup_vm_session_files(&path, &info.socket_path);
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Check if there's an active VM session for the given env_name.
 /// This is the primary entry point for cross-process VM detection.
 pub fn is_vm_session_active(env_name: &str) -> bool {
