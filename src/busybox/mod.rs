@@ -119,20 +119,21 @@ pub fn is_inside_vm() -> bool {
     }
 
     // 4. Check CPU flags for hypervisor detection
-    // - vmx (Intel VT-x) or svm (AMD-V): hardware virtualization support, indicates physical machine
-    // - hypervisor: indicates running under a hypervisor (VM)
-    // Physical machine: has vmx/svm, no hypervisor
-    // VM: no vmx/svm (unless nested virt), has hypervisor
+    // The 'hypervisor' flag in /proc/cpuinfo definitively indicates we're inside a VM.
+    // This is set by the hypervisor (QEMU/KVM, etc.) and is more reliable than DMI checks.
+    // Note: A VM guest may also have vmx/svm if the host has virtualization extensions,
+    // but the hypervisor flag is always present when running under a hypervisor.
     if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
         for line in cpuinfo.lines() {
             if line.starts_with("flags") {
-                // If CPU has vmx or svm, this is a physical machine with virtualization support
-                if line.contains("vmx") || line.contains("svm") {
-                    return false;
-                }
-                // If CPU has hypervisor flag, we're inside a VM
+                // Check hypervisor flag FIRST - this definitively means we're in a VM
                 if line.contains("hypervisor") {
                     return true;
+                }
+                // vmx/svm on a physical machine without hypervisor flag means
+                // the machine has virtualization support but isn't a VM
+                if line.contains("vmx") || line.contains("svm") {
+                    return false;
                 }
             }
         }

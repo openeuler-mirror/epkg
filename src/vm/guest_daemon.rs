@@ -1756,19 +1756,29 @@ fn accept_vsock_with_timeout(raw_fd: RawFd, timeout_ms: u32) -> Result<Option<Ra
     // poll() uses -1 for infinite wait, but PollTimeout::try_from() only handles positive values
     // Cap very large timeouts to i32::MAX ms (~24 days) which is poll's maximum positive timeout
     let poll_timeout = if timeout_ms == 0 || timeout_ms > i32::MAX as u32 {
+        let _ = kmsg_write("<6>accept_vsock_with_timeout: using infinite poll (-1)\n");
         PollTimeout::try_from(-1).unwrap() // Infinite wait
     } else {
+        let _ = kmsg_write(&format!("<6>accept_vsock_with_timeout: timeout {} ms\n", timeout_ms));
         PollTimeout::try_from(timeout_ms as i32).unwrap()
     };
 
+    let _ = kmsg_write("<6>accept_vsock_with_timeout: calling poll()\n");
     match poll(&mut poll_fds, poll_timeout) {
-        Ok(0) => Ok(None),
-        Ok(_) => {
+        Ok(0) => {
+            let _ = kmsg_write("<6>accept_vsock_with_timeout: poll returned 0 (idle timeout)\n");
+            Ok(None)
+        }
+        Ok(n) => {
+            let _ = kmsg_write(&format!("<6>accept_vsock_with_timeout: poll returned {} (data ready)\n", n));
             let client_fd = socket::accept(raw_fd)
                 .map_err(|e| eyre!("vsock accept failed: {}", e))?;
             Ok(Some(client_fd))
         }
-        Err(e) => Err(e.into()),
+        Err(e) => {
+            let _ = kmsg_write(&format!("<3>accept_vsock_with_timeout: poll ERROR: {}\n", e));
+            Err(e.into())
+        }
     }
 }
 
@@ -1879,6 +1889,7 @@ fn run_vsock_server() -> Result<()> {
             };
             fd
         } else {
+            kmsg_write(&format!("<6>run_vsock_server: waiting for next connection (reuse, {} ms)\n", next_idle_timeout_ms));
             log::debug!(
                 "vm-daemon: waiting for next connection (reuse, {} ms)...",
                 next_idle_timeout_ms
@@ -1886,6 +1897,7 @@ fn run_vsock_server() -> Result<()> {
             match accept_vsock_with_timeout(raw_fd, next_idle_timeout_ms)? {
                 Some(fd) => fd,
                 None => {
+                    kmsg_write("<6>run_vsock_server: idle timeout, powering off guest\n");
                     log::debug!("vm-daemon: idle timeout, powering off guest");
                     break;
                 }
@@ -1920,6 +1932,7 @@ fn run_vsock_server() -> Result<()> {
             }
             Ok(ConnectionDisposition::ReuseWait { idle_timeout_ms }) => {
                 next_idle_timeout_ms = idle_timeout_ms;
+                kmsg_write(&format!("<6>run_vsock_server: ReuseWait idle_timeout_ms={}, continuing loop\n", next_idle_timeout_ms));
                 log::debug!(
                     "vm-daemon: reuse_vm — next idle window {} ms",
                     next_idle_timeout_ms
@@ -1983,6 +1996,7 @@ fn run_vsock_server_with_existing_listener(
             };
             fd
         } else {
+            kmsg_write(&format!("<6>run_vsock_server: waiting for next connection (reuse, {} ms)\n", next_idle_timeout_ms));
             log::debug!(
                 "vm-daemon: waiting for next connection (reuse, {} ms)...",
                 next_idle_timeout_ms
@@ -1990,6 +2004,7 @@ fn run_vsock_server_with_existing_listener(
             match accept_vsock_with_timeout(raw_fd, next_idle_timeout_ms)? {
                 Some(fd) => fd,
                 None => {
+                    kmsg_write("<6>run_vsock_server: idle timeout, powering off guest\n");
                     log::debug!("vm-daemon: idle timeout, powering off guest");
                     break;
                 }

@@ -77,10 +77,37 @@ pub fn vm_socket_path_for_env(env_name: &str) -> std::path::PathBuf {
 }
 
 /// Check if a process with the given PID is still alive.
+/// Returns true if:
+/// - kill(pid, 0) succeeds (process exists and we can signal it)
+/// - kill(pid, 0) fails with EPERM (process exists but we lack permission, e.g. in user namespace)
+/// Returns false only if:
+/// - kill(pid, 0) fails with ESRCH (process doesn't exist)
+///
+/// This handles the case where a namespace child process tries to check a host PID.
+/// The child is in a user namespace and cannot signal external processes (EPERM),
+/// but the process is still alive.
 #[cfg(unix)]
 pub fn is_process_alive(pid: u32) -> bool {
+    use nix::errno::Errno;
     // Send signal 0 to check if process exists
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None) {
+        Ok(_) => {
+            log::debug!("is_process_alive: PID {} exists and can signal", pid);
+            true
+        }
+        Err(Errno::EPERM) => {
+            log::debug!("is_process_alive: PID {} exists but no permission (EPERM) - assuming alive", pid);
+            true  // Process exists but we lack permission (e.g. in user namespace)
+        }
+        Err(Errno::ESRCH) => {
+            log::debug!("is_process_alive: PID {} does not exist (ESRCH)", pid);
+            false // Process doesn't exist
+        }
+        Err(e) => {
+            log::debug!("is_process_alive: unexpected error for PID {}: {}", pid, e);
+            false  // Treat other errors as process not alive for safety
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -104,13 +131,18 @@ pub fn is_process_alive(pid: u32) -> bool {
 /// Returns session info if a live VM exists, None otherwise.
 pub fn discover_vm_session(env_name: &str) -> Result<Option<VmSessionInfo>> {
     let session_file = vm_session_file_path(env_name);
+    log::debug!("vm_session: discovering session for {}, file={}", env_name, session_file.display());
 
     if !session_file.exists() {
+        log::debug!("vm_session: session file does not exist for {}", env_name);
         return Ok(None);
     }
 
     let content = match std::fs::read_to_string(&session_file) {
-        Ok(c) => c,
+        Ok(c) => {
+            log::debug!("vm_session: read session file for {}, bytes={}", env_name, c.len());
+            c
+        }
         Err(e) => {
             log::debug!("vm_session: failed to read session file {}: {}", session_file.display(), e);
             return Ok(None);
@@ -118,9 +150,14 @@ pub fn discover_vm_session(env_name: &str) -> Result<Option<VmSessionInfo>> {
     };
 
     let info: VmSessionInfo = match serde_json::from_str(&content) {
-        Ok(i) => i,
+        Ok(i) => {
+            log::debug!("vm_session: successfully parsed session file for {}", env_name);
+            i
+        }
         Err(e) => {
-            log::debug!("vm_session: failed to parse session file {}: {}", session_file.display(), e);
+            log::warn!("vm_session: failed to parse session file {}: {} - content length={}",
+                       session_file.display(), e, content.len());
+            log::debug!("vm_session: session file content: {}", content);
             // Corrupt file, clean up
             let _ = std::fs::remove_file(&session_file);
             return Ok(None);
@@ -138,8 +175,9 @@ pub fn discover_vm_session(env_name: &str) -> Result<Option<VmSessionInfo>> {
         return Ok(Some(info));
     }
 
+    log::debug!("vm_session: checking daemon_pid {} for session {}", info.daemon_pid, env_name);
     if !is_process_alive(info.daemon_pid) {
-        log::debug!("vm_session: daemon process {} is dead, cleaning up", info.daemon_pid);
+        log::warn!("vm_session: daemon process {} is dead, cleaning up session {}", info.daemon_pid, env_name);
         cleanup_vm_session_files(&session_file, &info.socket_path);
         return Ok(None);
     }
