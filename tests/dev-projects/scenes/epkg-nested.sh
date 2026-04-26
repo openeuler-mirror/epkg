@@ -24,7 +24,13 @@ esac
 
 if [ "$list1" != "$list2" ]; then
     echo "ERROR: epkg list core fields differ between direct and nested" >&2
-    diff -u <(echo "$list1") <(echo "$list2") >&2 || true
+    # Use temp files for portable diff (process substitution <(...) is bash-only)
+    tmp1=$(mktemp)
+    tmp2=$(mktemp)
+    echo "$list1" > "$tmp1"
+    echo "$list2" > "$tmp2"
+    diff -u "$tmp1" "$tmp2" >&2 || true
+    rm -f "$tmp1" "$tmp2"
     exit 1
 fi
 
