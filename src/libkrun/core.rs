@@ -1788,15 +1788,31 @@ fn shutdown_krun_session_impl(session: VmReuseSession) -> Result<()> {
     if result < 0 {
         log::warn!("libkrun: krun_signal_shutdown failed with status {}", result);
     }
-    log::debug!("libkrun: waiting for VM thread to join");
-    match session.vm_thread.join() {
-        Ok(vm_status) => {
-            log::debug!("libkrun: VM thread finished with status {}", vm_status);
-        }
-        Err(e) => {
-            log::error!("libkrun: VM thread join failed: {:?}", e);
+
+    // On macOS, vm_thread.join() can hang indefinitely due to virtiofs cleanup threads
+    // not properly terminating. Skip the join and let OS clean up resources.
+    // This matches the workaround in krun_vsock_shutdown_join_free_exit().
+    #[cfg(not(target_os = "linux"))]
+    {
+        log::debug!("libkrun: skipping VM thread join on non-Linux (virtiofs cleanup bug workaround)");
+        // VM thread will be cleaned up by OS when process exits or context is freed
+        // Just detach the thread by dropping it without joining
+        drop(session.vm_thread);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        log::debug!("libkrun: waiting for VM thread to join");
+        match session.vm_thread.join() {
+            Ok(vm_status) => {
+                log::debug!("libkrun: VM thread finished with status {}", vm_status);
+            }
+            Err(e) => {
+                log::error!("libkrun: VM thread join failed: {:?}", e);
+            }
         }
     }
+
     log::debug!("libkrun: freeing VM context");
     unsafe {
         let _ = krun_free_ctx(session.ctx_id);
@@ -1840,13 +1856,24 @@ fn krun_vsock_shutdown_join_free(
         crate::debug_epkg!("libkrun: krun_signal_shutdown failed with status {}", result);
     }
 
-    crate::debug_epkg!("libkrun: waiting for VM thread to join...");
-    match vm_thread.join() {
-        Ok(vm_status) => {
-            crate::debug_epkg!("libkrun: VM thread finished with status {}", vm_status);
-        }
-        Err(e) => {
-            crate::debug_epkg!("libkrun: VM thread join failed: {:?}", e);
+    // On macOS, vm_thread.join() can hang indefinitely due to virtiofs cleanup threads
+    // not properly terminating. Skip the join and let OS clean up resources.
+    #[cfg(not(target_os = "linux"))]
+    {
+        crate::debug_epkg!("libkrun: skipping VM thread join on non-Linux (virtiofs cleanup bug workaround)");
+        drop(vm_thread);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        crate::debug_epkg!("libkrun: waiting for VM thread to join...");
+        match vm_thread.join() {
+            Ok(vm_status) => {
+                crate::debug_epkg!("libkrun: VM thread finished with status {}", vm_status);
+            }
+            Err(e) => {
+                crate::debug_epkg!("libkrun: VM thread join failed: {:?}", e);
+            }
         }
     }
 
