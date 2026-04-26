@@ -9,25 +9,31 @@ use color_eyre::Result;
 pub struct DnfParams {
     pub subcmd: String,
     pub packages: Vec<String>,
+    pub assume_yes: bool,
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<DnfParams> {
     let (subcmd, sub_matches) = matches.subcommand().unwrap_or(("help", matches));
 
+    // try_get_many handles subcommands without a "packages" arg (e.g. `list`)
     let packages: Vec<String> = sub_matches
-        .get_many::<String>("packages")
+        .try_get_many::<String>("packages")
+        .unwrap_or_default()
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
 
-    Ok(DnfParams { subcmd: subcmd.to_string(), packages })
+    let common = super::apt::parse_common_options(matches);
+
+    Ok(DnfParams { subcmd: subcmd.to_string(), packages, assume_yes: common.assume_yes })
 }
 
 pub fn command() -> Command {
-    Command::new("dnf")
-        .about("Fedora/RHEL package manager compatibility shim (epkg)")
-        .visible_alias("yum")
-        .subcommand_required(true)
-        .arg_required_else_help(true)
+    super::apt::add_common_args(
+        Command::new("dnf")
+            .about("Fedora/RHEL package manager compatibility shim (epkg)")
+            .visible_alias("yum")
+            .subcommand_required(true)
+            .arg_required_else_help(true))
         .subcommand(
             Command::new("install")
                 .about("Install package(s)")
@@ -92,6 +98,8 @@ pub fn command() -> Command {
 
 pub fn run(params: DnfParams) -> Result<()> {
     crate::init::try_light_init()?;
+
+    super::apt::apply_common_options(&super::apt::PmParams { assume_yes: params.assume_yes });
 
     match params.subcmd.as_str() {
         "install" => {

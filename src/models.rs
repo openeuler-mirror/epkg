@@ -1534,6 +1534,19 @@ pub fn config() -> ConfigGuard {
     ConfigGuard(CONFIG.read().unwrap_or_else(|e| e.into_inner()))
 }
 
+/// Set the `assume_yes` flag on the global config.
+///
+/// Used by busybox shims (apk/apt/dnf) that parse `-y`/`--assume-yes` from
+/// their own CLI args, which need to propagate the flag to the backend config
+/// so that [`crate::utils::user_prompt_and_confirm`] checks it.
+pub fn set_assume_yes(value: bool) {
+    if let Ok(mut guard) = CONFIG.write() {
+        if let Some(ref mut config) = *guard {
+            config.common.assume_yes = value;
+        }
+    }
+}
+
 #[cfg(test)]
 /// Guard for mutable config access in tests.
 pub struct ConfigMutGuard(std::sync::RwLockWriteGuard<'static, Option<EPKGConfig>>);

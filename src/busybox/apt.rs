@@ -2,32 +2,80 @@
 //!
 //! Acts as a simplified CLI parser like main.rs, calling epkg backend functions.
 
-use clap::{Arg, Command};
+use clap::{Arg, ArgAction, Command};
 use color_eyre::Result;
+
+// ---------------------------------------------------------------------------
+// Common CLI option helpers shared by package-manager applets (apt, apk, dnf)
+// ---------------------------------------------------------------------------
+
+/// Parameters shared across package-manager CLI shims (apt, apk, dnf).
+///
+/// Extend this struct when adding new shared flags (e.g. `--quiet`, `--dry-run`).
+pub struct PmParams {
+    /// `-y` / `--assume-yes`: answer yes to all prompts.
+    pub assume_yes: bool,
+}
+
+/// Add common CLI arguments shared by package-manager applets.
+///
+/// Currently adds:
+/// - `-y` / `--assume-yes`: answer yes to all prompts
+pub fn add_common_args(cmd: Command) -> Command {
+    cmd.arg(
+        Arg::new("assume-yes")
+            .short('y')
+            .long("assume-yes")
+            .help("Answer yes to all prompts")
+            .global(true)
+            .action(ArgAction::SetTrue),
+    )
+}
+
+/// Parse common CLI parameters from the top-level arg matches.
+pub fn parse_common_options(matches: &clap::ArgMatches) -> PmParams {
+    let assume_yes = matches.contains_id("assume-yes") && matches.get_flag("assume-yes");
+    PmParams { assume_yes }
+}
+
+/// Apply common CLI parameters to the global epkg config.
+///
+/// Call this from an applet's `run()` after `try_light_init()`.
+pub fn apply_common_options(params: &PmParams) {
+    if params.assume_yes {
+        crate::models::set_assume_yes(true);
+    }
+}
 
 /// Parameters extracted from apt CLI. Reuses epkg backend.
 pub struct AptParams {
     pub subcmd: String,
     pub packages: Vec<String>,
+    pub assume_yes: bool,
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<AptParams> {
     let (subcmd, sub_matches) = matches.subcommand().unwrap_or(("help", matches));
 
+    // try_get_many handles subcommands without a "packages" arg (e.g. `update`)
     let packages: Vec<String> = sub_matches
-        .get_many::<String>("packages")
+        .try_get_many::<String>("packages")
+        .unwrap_or_default()
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
 
-    Ok(AptParams { subcmd: subcmd.to_string(), packages })
+    let common = parse_common_options(matches);
+
+    Ok(AptParams { subcmd: subcmd.to_string(), packages, assume_yes: common.assume_yes })
 }
 
 pub fn command() -> Command {
-    Command::new("apt")
-        .about("Debian/Ubuntu package manager compatibility shim (epkg)")
-        .visible_alias("apt-get")
-        .subcommand_required(true)
-        .arg_required_else_help(true)
+    add_common_args(
+        Command::new("apt")
+            .about("Debian/Ubuntu package manager compatibility shim (epkg)")
+            .visible_alias("apt-get")
+            .subcommand_required(true)
+            .arg_required_else_help(true))
         .subcommand(
             Command::new("install")
                 .about("Install package(s)")
@@ -96,6 +144,8 @@ pub fn command() -> Command {
 
 pub fn run(params: AptParams) -> Result<()> {
     crate::init::try_light_init()?;
+
+    apply_common_options(&PmParams { assume_yes: params.assume_yes });
 
     match params.subcmd.as_str() {
         "install" => {

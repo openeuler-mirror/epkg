@@ -10,24 +10,30 @@ use color_eyre::Result;
 pub struct ApkParams {
     pub subcmd: String,
     pub packages: Vec<String>,
+    pub assume_yes: bool,
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<ApkParams> {
     let (subcmd, sub_matches) = matches.subcommand().unwrap_or(("help", matches));
 
+    // try_get_many handles subcommands without a "packages" arg (e.g. `list`)
     let packages: Vec<String> = sub_matches
-        .get_many::<String>("packages")
+        .try_get_many::<String>("packages")
+        .unwrap_or_default()
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
 
-    Ok(ApkParams { subcmd: subcmd.to_string(), packages })
+    let common = super::apt::parse_common_options(matches);
+
+    Ok(ApkParams { subcmd: subcmd.to_string(), packages, assume_yes: common.assume_yes })
 }
 
 pub fn command() -> Command {
-    Command::new("apk")
-        .about("Alpine package manager compatibility shim (epkg)")
-        .subcommand_required(true)
-        .arg_required_else_help(true)
+    super::apt::add_common_args(
+        Command::new("apk")
+            .about("Alpine package manager compatibility shim (epkg)")
+            .subcommand_required(true)
+            .arg_required_else_help(true))
         .subcommand(
             Command::new("add")
                 .about("Install package(s)")
@@ -84,6 +90,8 @@ pub fn command() -> Command {
 pub fn run(params: ApkParams) -> Result<()> {
     // Initialize like main.rs does for regular epkg commands
     crate::init::try_light_init()?;
+
+    super::apt::apply_common_options(&super::apt::PmParams { assume_yes: params.assume_yes });
 
     match params.subcmd.as_str() {
         "add" => {
