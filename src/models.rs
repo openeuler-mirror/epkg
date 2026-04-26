@@ -1534,15 +1534,26 @@ pub fn config() -> ConfigGuard {
     ConfigGuard(CONFIG.read().unwrap_or_else(|e| e.into_inner()))
 }
 
-/// Set the `assume_yes` flag on the global config.
-///
-/// Used by busybox shims (apk/apt/dnf) that parse `-y`/`--assume-yes` from
-/// their own CLI args, which need to propagate the flag to the backend config
-/// so that [`crate::utils::user_prompt_and_confirm`] checks it.
-pub fn set_assume_yes(value: bool) {
+/// Flags accepted by busybox package-manager shims (apt/apk/dnf).
+/// Applied atomically via [`apply_config_flags`].
+#[derive(Default)]
+pub struct ConfigFlags {
+    pub assume_yes: bool,
+    pub quiet: bool,
+    pub dry_run: bool,
+    pub download_only: bool,
+    pub ignore_missing: bool,
+}
+
+/// Apply busybox flags to the global config atomically (single lock acquisition).
+pub fn apply_config_flags(flags: &ConfigFlags) {
     if let Ok(mut guard) = CONFIG.write() {
         if let Some(ref mut config) = *guard {
-            config.common.assume_yes = value;
+            config.common.assume_yes    = flags.assume_yes;
+            config.common.quiet         = flags.quiet;
+            config.common.dry_run       = flags.dry_run;
+            config.common.download_only = flags.download_only;
+            config.common.ignore_missing = flags.ignore_missing;
         }
     }
 }

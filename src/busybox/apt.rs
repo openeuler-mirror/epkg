@@ -10,17 +10,25 @@ use color_eyre::Result;
 // ---------------------------------------------------------------------------
 
 /// Parameters shared across package-manager CLI shims (apt, apk, dnf).
-///
-/// Extend this struct when adding new shared flags (e.g. `--quiet`, `--dry-run`).
+#[derive(Default)]
 pub struct PmParams {
     /// `-y` / `--assume-yes`: answer yes to all prompts.
     pub assume_yes: bool,
+    /// `-q` / `--quiet`: suppress progress output.
+    pub quiet: bool,
+    /// `-s` / `--dry-run`: simulate only.
+    pub dry_run: bool,
+    /// `-d` / `--download-only`: download without installing.
+    pub download_only: bool,
+    /// `-m` / `--ignore-missing`: continue despite missing packages.
+    pub ignore_missing: bool,
 }
 
 /// Add common CLI arguments shared by package-manager applets.
 ///
 /// Currently adds:
 /// - `-y` / `--assume-yes`: answer yes to all prompts
+/// - `-q` / `--quiet`: suppress progress output
 pub fn add_common_args(cmd: Command) -> Command {
     cmd.arg(
         Arg::new("assume-yes")
@@ -30,21 +38,34 @@ pub fn add_common_args(cmd: Command) -> Command {
             .global(true)
             .action(ArgAction::SetTrue),
     )
+    .arg(
+        Arg::new("quiet")
+            .short('q')
+            .long("quiet")
+            .help("Quiet mode - no progress output")
+            .global(true)
+            .action(ArgAction::SetTrue),
+    )
 }
 
 /// Parse common CLI parameters from the top-level arg matches.
 pub fn parse_common_options(matches: &clap::ArgMatches) -> PmParams {
     let assume_yes = matches.contains_id("assume-yes") && matches.get_flag("assume-yes");
-    PmParams { assume_yes }
+    let quiet     = matches.contains_id("quiet")       && matches.get_flag("quiet");
+    PmParams { assume_yes, quiet, ..Default::default() }
 }
 
-/// Apply common CLI parameters to the global epkg config.
+/// Apply common CLI parameters to the global epkg config atomically.
 ///
 /// Call this from an applet's `run()` after `try_light_init()`.
 pub fn apply_common_options(params: &PmParams) {
-    if params.assume_yes {
-        crate::models::set_assume_yes(true);
-    }
+    crate::models::apply_config_flags(&crate::models::ConfigFlags {
+        assume_yes:     params.assume_yes,
+        quiet:          params.quiet,
+        dry_run:        params.dry_run,
+        download_only:  params.download_only,
+        ignore_missing: params.ignore_missing,
+    });
 }
 
 /// Parameters extracted from apt CLI. Reuses epkg backend.
@@ -52,6 +73,12 @@ pub struct AptParams {
     pub subcmd: String,
     pub packages: Vec<String>,
     pub assume_yes: bool,
+    pub quiet: bool,
+    pub dry_run: bool,
+    pub download_only: bool,
+    pub ignore_missing: bool,
+    #[allow(dead_code)]
+    pub fix_broken: bool,
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<AptParams> {
@@ -66,7 +93,34 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<AptParams> {
 
     let common = parse_common_options(matches);
 
-    Ok(AptParams { subcmd: subcmd.to_string(), packages, assume_yes: common.assume_yes })
+    Ok(AptParams {
+        subcmd:        subcmd.to_string(),
+        packages,
+        assume_yes:    common.assume_yes,
+        quiet:         common.quiet,
+        dry_run:       matches.contains_id("dry-run")       && matches.get_flag("dry-run"),
+        download_only: matches.contains_id("download-only") && matches.get_flag("download-only"),
+        ignore_missing:matches.contains_id("ignore-missing")&& matches.get_flag("ignore-missing"),
+        fix_broken:    matches.contains_id("fix-broken")    && matches.get_flag("fix-broken"),
+    })
+}
+
+// Helper to add args common to install and remove subcommands.
+// These are accepted but not wired to backend (epkg may or may not have
+// equivalents for apt-specific concepts like recommends/reinstall).
+fn add_install_remove_args(cmd: Command) -> Command {
+    cmd.arg(
+        Arg::new("no-install-recommends")
+            .long("no-install-recommends")
+            .help("Do not install recommended packages (accepted, epkg ignores recommends)")
+            .action(ArgAction::SetTrue),
+    )
+    .arg(
+        Arg::new("reinstall")
+            .long("reinstall")
+            .help("Reinstall packages (accepted)")
+            .action(ArgAction::SetTrue),
+    )
 }
 
 pub fn command() -> Command {
@@ -75,24 +129,73 @@ pub fn command() -> Command {
             .about("Debian/Ubuntu package manager compatibility shim (epkg)")
             .visible_alias("apt-get")
             .subcommand_required(true)
-            .arg_required_else_help(true))
+            .arg_required_else_help(true)
+            // Global options commonly used in scripts/CI/Docker
+            .arg(
+                Arg::new("dry-run")
+                    .short('s')
+                    .long("dry-run")
+                    .alias("simulate")
+                    .alias("just-print")
+                    .help("Simulate - show what would be done")
+                    .global(true)
+                    .action(ArgAction::SetTrue),
+            )
+            .arg(
+                Arg::new("download-only")
+                    .short('d')
+                    .long("download-only")
+                    .help("Download only - do not install")
+                    .global(true)
+                    .action(ArgAction::SetTrue),
+            )
+            .arg(
+                Arg::new("ignore-missing")
+                    .short('m')
+                    .long("ignore-missing")
+                    .alias("fix-missing")
+                    .help("Ignore missing packages")
+                    .global(true)
+                    .action(ArgAction::SetTrue),
+            )
+            .arg(
+                Arg::new("fix-broken")
+                    .short('f')
+                    .long("fix-broken")
+                    .help("Fix broken dependencies (accepted)")
+                    .global(true)
+                    .action(ArgAction::SetTrue),
+            )
+            .arg(
+                Arg::new("target-release")
+                    .short('t')
+                    .long("target-release")
+                    .alias("default-release")
+                    .help("Target release (accepted)")
+                    .global(true)
+                    .num_args(1),
+            ))
         .subcommand(
-            Command::new("install")
-                .about("Install package(s)")
-                .arg(Arg::new("packages")
-                    .value_name("PACKAGES")
-                    .help("Package names to install")
-                    .num_args(1..)
-                    .required(true)),
+            add_install_remove_args(
+                Command::new("install")
+                    .about("Install package(s)")
+                    .arg(Arg::new("packages")
+                        .value_name("PACKAGES")
+                        .help("Package names to install")
+                        .num_args(1..)
+                        .required(true)),
+            )
         )
         .subcommand(
-            Command::new("remove")
-                .about("Remove package(s)")
-                .arg(Arg::new("packages")
-                    .value_name("PACKAGES")
-                    .help("Package names to remove")
-                    .num_args(1..)
-                    .required(true)),
+            add_install_remove_args(
+                Command::new("remove")
+                    .about("Remove package(s)")
+                    .arg(Arg::new("packages")
+                        .value_name("PACKAGES")
+                        .help("Package names to remove")
+                        .num_args(1..)
+                        .required(true)),
+            )
         )
         .subcommand(
             Command::new("purge")
@@ -145,7 +248,14 @@ pub fn command() -> Command {
 pub fn run(params: AptParams) -> Result<()> {
     crate::init::try_light_init()?;
 
-    apply_common_options(&PmParams { assume_yes: params.assume_yes });
+    apply_common_options(&PmParams {
+        assume_yes:     params.assume_yes,
+        quiet:          params.quiet,
+        dry_run:        params.dry_run,
+        download_only:  params.download_only,
+        ignore_missing: params.ignore_missing,
+    });
+    // fix_broken: accepted but not wired (no epkg backend equivalent)
 
     match params.subcmd.as_str() {
         "install" => {

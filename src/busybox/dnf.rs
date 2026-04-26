@@ -2,7 +2,7 @@
 //!
 //! Acts as a simplified CLI parser like main.rs, calling epkg backend functions.
 
-use clap::{Arg, Command};
+use clap::{Arg, ArgAction, Command};
 use color_eyre::Result;
 
 /// Parameters extracted from dnf/yum CLI. Reuses epkg backend.
@@ -10,12 +10,14 @@ pub struct DnfParams {
     pub subcmd: String,
     pub packages: Vec<String>,
     pub assume_yes: bool,
+    pub quiet: bool,
+    #[allow(dead_code)]
+    pub no_gpgcheck: bool,
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<DnfParams> {
     let (subcmd, sub_matches) = matches.subcommand().unwrap_or(("help", matches));
 
-    // try_get_many handles subcommands without a "packages" arg (e.g. `list`)
     let packages: Vec<String> = sub_matches
         .try_get_many::<String>("packages")
         .unwrap_or_default()
@@ -24,7 +26,13 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<DnfParams> {
 
     let common = super::apt::parse_common_options(matches);
 
-    Ok(DnfParams { subcmd: subcmd.to_string(), packages, assume_yes: common.assume_yes })
+    Ok(DnfParams {
+        subcmd:       subcmd.to_string(),
+        packages,
+        assume_yes:   common.assume_yes,
+        quiet:        common.quiet,
+        no_gpgcheck:  matches.get_flag("nogpgcheck"),
+    })
 }
 
 pub fn command() -> Command {
@@ -33,7 +41,14 @@ pub fn command() -> Command {
             .about("Fedora/RHEL package manager compatibility shim (epkg)")
             .visible_alias("yum")
             .subcommand_required(true)
-            .arg_required_else_help(true))
+            .arg_required_else_help(true)
+            .arg(
+                Arg::new("nogpgcheck")
+                    .long("nogpgcheck")
+                    .help("Skip GPG signature check (accepted)")
+                    .global(true)
+                    .action(ArgAction::SetTrue),
+            ))
         .subcommand(
             Command::new("install")
                 .about("Install package(s)")
@@ -99,7 +114,11 @@ pub fn command() -> Command {
 pub fn run(params: DnfParams) -> Result<()> {
     crate::init::try_light_init()?;
 
-    super::apt::apply_common_options(&super::apt::PmParams { assume_yes: params.assume_yes });
+    super::apt::apply_common_options(&super::apt::PmParams {
+        assume_yes: params.assume_yes,
+        quiet:      params.quiet,
+        ..Default::default()
+    });
 
     match params.subcmd.as_str() {
         "install" => {

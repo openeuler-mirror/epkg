@@ -2,7 +2,7 @@
 //!
 //! Acts as a simplified CLI parser like main.rs, calling epkg backend functions.
 
-use clap::{Arg, Command};
+use clap::{Arg, ArgAction, Command};
 use color_eyre::Result;
 
 /// Parameters extracted from apk CLI. Reuses epkg backend by calling
@@ -11,12 +11,17 @@ pub struct ApkParams {
     pub subcmd: String,
     pub packages: Vec<String>,
     pub assume_yes: bool,
+    pub quiet: bool,
+    #[allow(dead_code)]
+    pub no_cache: bool,
+    pub update_cache: bool,
+    #[allow(dead_code)]
+    pub virtual_pkg: Option<String>,
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<ApkParams> {
     let (subcmd, sub_matches) = matches.subcommand().unwrap_or(("help", matches));
 
-    // try_get_many handles subcommands without a "packages" arg (e.g. `list`)
     let packages: Vec<String> = sub_matches
         .try_get_many::<String>("packages")
         .unwrap_or_default()
@@ -25,7 +30,18 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<ApkParams> {
 
     let common = super::apt::parse_common_options(matches);
 
-    Ok(ApkParams { subcmd: subcmd.to_string(), packages, assume_yes: common.assume_yes })
+    Ok(ApkParams {
+        subcmd:       subcmd.to_string(),
+        packages,
+        assume_yes:   common.assume_yes,
+        quiet:        common.quiet,
+        no_cache:     matches.get_flag("no-cache"),
+        update_cache: matches.get_flag("update-cache"),
+        virtual_pkg: sub_matches
+            .try_get_one::<String>("virtual")
+            .unwrap_or_default()
+            .map(|s| s.to_string()),
+    })
 }
 
 pub fn command() -> Command {
@@ -33,7 +49,22 @@ pub fn command() -> Command {
         Command::new("apk")
             .about("Alpine package manager compatibility shim (epkg)")
             .subcommand_required(true)
-            .arg_required_else_help(true))
+            .arg_required_else_help(true)
+            .arg(
+                Arg::new("no-cache")
+                    .long("no-cache")
+                    .help("Do not cache downloaded packages (accepted)")
+                    .global(true)
+                    .action(ArgAction::SetTrue),
+            )
+            .arg(
+                Arg::new("update-cache")
+                    .short('U')
+                    .long("update-cache")
+                    .help("Update repository cache before operation")
+                    .global(true)
+                    .action(ArgAction::SetTrue),
+            ))
         .subcommand(
             Command::new("add")
                 .about("Install package(s)")
@@ -41,7 +72,14 @@ pub fn command() -> Command {
                     .value_name("PACKAGES")
                     .help("Package names to install")
                     .num_args(1..)
-                    .required(true)),
+                    .required(true))
+                .arg(
+                    Arg::new("virtual")
+                        .short('t')
+                        .long("virtual")
+                        .help("Group packages under a virtual name (accepted)")
+                        .num_args(1),
+                ),
         )
         .subcommand(
             Command::new("del")
@@ -91,7 +129,15 @@ pub fn run(params: ApkParams) -> Result<()> {
     // Initialize like main.rs does for regular epkg commands
     crate::init::try_light_init()?;
 
-    super::apt::apply_common_options(&super::apt::PmParams { assume_yes: params.assume_yes });
+    super::apt::apply_common_options(&super::apt::PmParams {
+        assume_yes: params.assume_yes,
+        quiet:      params.quiet,
+        ..Default::default()
+    });
+
+    if params.update_cache {
+        crate::repo::sync_channel_metadata()?;
+    }
 
     match params.subcmd.as_str() {
         "add" => {
