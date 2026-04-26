@@ -10,15 +10,15 @@ extract_core_fields() {
 }
 
 # Direct (host-side) vs nested (inside-env) epkg list comparison
-list1=$("$EPKG_BIN" -e "$ENV_NAME" list 2>/dev/null | tail -n +5 | grep -v '^Total' | grep -v '^$' | extract_core_fields | sort)
+list1=$("$EPKG_BIN" -e "$ENV_NAME" list | tail -n +5 | grep -v '^Total' | grep -v '^$' | extract_core_fields | sort)
 
 case "$(uname -s)" in
     Darwin)
         # macOS (VM mode): EPKG_ACTIVE_ENV auto-detects env
-        list2=$(run bash -c "epkg list" 2>/dev/null | tail -n +5 | grep -v '^Total' | grep -v '^$' | extract_core_fields | sort)
+        list2=$(run bash -c "epkg list" | tail -n +5 | grep -v '^Total' | grep -v '^$' | extract_core_fields | sort)
         ;;
     *)
-        list2=$(run bash -c "epkg -e \"$ENV_NAME\" list" 2>/dev/null | tail -n +5 | grep -v '^Total' | grep -v '^$' | extract_core_fields | sort)
+        list2=$(run bash -c "epkg -e \"$ENV_NAME\" list" | tail -n +5 | grep -v '^Total' | grep -v '^$' | extract_core_fields | sort)
         ;;
 esac
 
@@ -38,10 +38,10 @@ for entry in "epkg:list:install:remove" \
     install_subcmd=$(echo "$entry" | cut -d: -f3)
     remove_subcmd=$(echo "$entry"  | cut -d: -f4)
 
-    run bash -c "$cmd $list_subcmd" >/dev/null 2>&1 || exit 1
-    run bash -c "$cmd -y $install_subcmd tree" >/dev/null 2>&1 || exit 1
-    run bash -c "$cmd $list_subcmd" 2>/dev/null | grep -qw tree || exit 1
-    run bash -c "$cmd -y $remove_subcmd tree" >/dev/null 2>&1 || exit 1
+    run bash -c "$cmd $list_subcmd"
+    run bash -c "$cmd -y $install_subcmd tree"
+    run bash -c "$cmd $list_subcmd" | grep -qw tree || exit 1
+    run bash -c "$cmd -y $remove_subcmd tree"
 done
 
 lang_ok

@@ -79,7 +79,9 @@ _run_logged() {
     r=$?
     _check_log_and_fail "$log_file" "$cmd_display"
     cat "$log_file"
-    return $r
+    # Exit on non-zero so callers don't need '|| exit 1' after every run()/run_install().
+    # Piped invocations (run ... | grep ...) are unaffected — exit only aborts the pipe subshell.
+    [ $r -eq 0 ] || exit $r
 }
 
 # "run --" so options like ruby -e / node -e are not parsed as epkg run options.

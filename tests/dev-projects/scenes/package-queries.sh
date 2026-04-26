@@ -17,12 +17,12 @@ run_install bash
 
 case "$PKG_TYPE" in
     rpm)
-        run rpm -q -a 2>/dev/null | grep -q bash || exit 1
-        run rpm -qi bash >/dev/null 2>&1 || echo "WARNING: rpm -qi bash failed" >&2
+        run rpm -q -a | grep -q bash || exit 1
+        run rpm -qi bash || echo "WARNING: rpm -qi bash failed" >&2
         ;;
     dpkg)
-        run dpkg-query -l 2>/dev/null | grep -q '^ii.*bash' || exit 1
-        run dpkg -s bash >/dev/null 2>&1 || echo "WARNING: dpkg -s bash failed" >&2
+        run dpkg-query -l | grep -q '^ii.*bash' || exit 1
+        run dpkg -s bash || echo "WARNING: dpkg -s bash failed" >&2
         ;;
 esac
 

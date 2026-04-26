@@ -5,13 +5,13 @@
 
 run_install bash coreutils
 
-run bash -c "echo HELLO" || exit 1
-run bash -c "id; whoami; pwd" || exit 1
-run stat /dev/ptmx || exit 1
-run ls -la /dev/pts/ || exit 1
+run bash -c "echo HELLO"
+run bash -c "id; whoami; pwd"
+run stat /dev/ptmx
+run ls -la /dev/pts/
 echo "test" | run bash -c "cat" || exit 1
 echo "id" | run bash || exit 1
-run which bash || exit 1
+run which bash
 run bash --version | head -1 || exit 1
 
 lang_ok

@@ -11,7 +11,7 @@ esac
 run_install bash
 
 # search --paths may download file list database (time consuming)
-"$EPKG_BIN" -e "$ENV_NAME" search --paths /bin/bash >/dev/null 2>&1 || exit 1
+"$EPKG_BIN" -e "$ENV_NAME" search --paths /bin/bash || exit 1
 
 result=$("$EPKG_BIN" -e "$ENV_NAME" search --paths /nonexistent/path/12345 2>&1)
 echo "$result" | grep -q "not found\|no matches\|No package" || echo "WARNING: Unexpected output for non-existent path: $result" >&2
