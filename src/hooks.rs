@@ -1573,13 +1573,26 @@ pub fn execute_hook(
     println!("Running hook: {}", hook.file_path);
 
     let env_vars = HashMap::new();
-    // For hooks with NeedsTargets, matched file paths are passed via stdin
-    // Example: texinfo hooks read file paths from stdin in their 'while read -r f' loops
-    let stdin_data = if hook.action.needs_targets {
-        Some(matched_targets.join("\n").into_bytes())
+    // For APK hooks with NeedsTargets, matched file paths are passed as command-line arguments
+    // (the trigger script uses "$@" to iterate over them)
+    // For Pacman-style hooks (texinfo), matched file paths are passed via stdin
+    // ("while read -r f" loops)
+    let (stdin_data, use_args_for_targets) = if hook.action.needs_targets {
+        if plan.package_format == PackageFormat::Apk {
+            // APK triggers expect matched paths as arguments ($@)
+            (None, true)
+        } else {
+            // Pacman-style hooks expect stdin
+            (Some(matched_targets.join("\n").into_bytes()), false)
+        }
     } else {
-        None
+        (None, false)
     };
+
+    // Add matched targets as command-line arguments for APK hooks
+    if use_args_for_targets {
+        args.extend(matched_targets.iter().cloned());
+    }
 
     // Execute the hook
     // Inherit VM settings from active VM reuse session during install/upgrade.
