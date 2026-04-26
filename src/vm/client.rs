@@ -344,6 +344,14 @@ pub fn try_execute_via_existing_vm_session(
 ) -> Result<Option<i32>> {
     use super::session::discover_vm_session;
 
+    // Prevent deadlock when running inside VM: connecting to our own daemon
+    // via vsock CID=3 would create a circular wait.
+    #[cfg(target_os = "linux")]
+    if crate::busybox::is_inside_vm() {
+        log::debug!("vm_client: inside VM, skip VM session routing to avoid deadlock");
+        return Ok(None);
+    }
+
     let env_name = &crate::models::config().common.env_name;
     let info = match discover_vm_session(env_name)? {
         Some(i) => i,

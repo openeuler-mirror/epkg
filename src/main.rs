@@ -2523,6 +2523,15 @@ fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
     #[cfg(feature = "libkrun")]
     use std::collections::HashMap;
 
+    // Prevent deadlock when running inside VM: routing through "existing VM session"
+    // would connect to our own daemon via vsock CID=3, creating a circular wait.
+    // The daemon waits for child (execute_batch poll loop), child waits for daemon response.
+    #[cfg(target_os = "linux")]
+    if crate::busybox::is_inside_vm() {
+        log::debug!("main: inside VM, skip VM session routing to avoid deadlock");
+        return Ok(None);
+    }
+
     // Commands that should be routed through existing VM
     let (subcommand_name, sub_matches) = match matches.subcommand() {
         Some(("install", sm)) => ("install", sm),
