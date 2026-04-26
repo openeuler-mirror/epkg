@@ -704,62 +704,69 @@ fn build_libkrun_config(
     })
 }
 
-/// # VM Virtiofs Mount Architecture
-///
-/// ## Root Filesystem
-/// The VM rootfs is set to env_root via `krun_set_root()`. This means:
-/// - Guest `/` = host env_root (e.g., `/Users/aa/.epkg/envs/test-env`)
-/// - Guest `/etc/epkg/env.yaml` exists and contains the environment config
-/// - `try_detect_environment_from_env_yaml()` finds the env automatically
-/// - `in_env_root = true` is set, making guest use `/` as effective root
-///
-/// ## Additional Mounts
-/// Extra virtiofs mounts serve two purposes:
-///
-/// 1. **Make host paths in env.yaml valid in VM**
-///    - env.yaml contains host paths like `env_base: /Users/aa/.epkg/envs/test-env`
-///    - Mounts like `home_epkg → /opt/epkg` make these paths accessible in VM
-///    - This allows nested epkg to resolve paths from env.yaml correctly
-///
-/// 2. **Enable cross-environment operations**
-///    - `/opt/epkg/envs` contains symlinks to all environments
-///    - Symlinks point to host paths (e.g., `/Users/aa/.epkg/envs/other-env`)
-///    - These host paths are mounted and valid in VM
-///    - So `epkg -e other-env ...` works in nested context
-///
-/// ## Environment Detection Without EPKG_ACTIVE_ENV
-/// Since rootfs = env_root:
-/// - `try_detect_environment_from_env_yaml()` returns true
-/// - No need for parent to pass EPKG_ACTIVE_ENV (it's user-set, not auto-set)
-/// - Nested epkg auto-detects environment from `/etc/epkg/env.yaml`
-/// - `in_env_root = true` ensures operations use `/` as effective root
-///
-/// ## Path Resolution
-/// When `in_env_root = true`:
-/// - `get_env_config_path(env_name)` returns `/etc/epkg/env.yaml` for current env
-/// - For other envs, uses `/opt/epkg/envs` which has valid symlinks
-/// - Store paths are accessible via mounted `home_epkg` → `/opt/epkg`
-///
-/// Build virtiofs mount specs from mount specs.
+/// Build virtiofs mount specs for VM guest.
 /// Returns Vec<(tag, host_path, guest_path, read_only)> for each directory mount.
 /// Skips non-directory sources since virtiofs only supports directory bind mounts.
+///
+/// # VM Virtiofs Mount Architecture
+///
+/// ## Path Consistency Rule
+/// Per docs/zh/architecture/env-path.md, guest paths should match host paths.
+/// This ensures:
+/// - Config file paths (env.yaml) are valid in VM guest
+/// - Disk space checks work correctly via virtiofs
+/// - Nested epkg can resolve paths from env.yaml
+///
+/// ## Mount Strategy
+/// All mounts are rw since permission control is done by host kernel (virtiofs passthrough).
+/// We mount directories in order and skip any that are already covered by a previous mount.
+///
+/// ## Mount Order (for Linux/macOS)
+/// 1. User-provided mount specs (highest priority)
+/// 2. home_epkg - core user config/store, always mounted
+/// 3. opt_epkg - if shared_store mode
+/// 4. epkg_store - only if standalone (symlink to dir outside home_epkg/opt_epkg)
+/// 5. home_cache - only if standalone (symlink to dir outside home_epkg/opt_epkg)
+/// 6. cwd - current working directory
+/// 7. epkg binary directory
+/// 8. epkg source directory (for mirrors.json)
+/// 9. /lib/modules
+///
+/// ## Directory Containment Detection
+/// We track canonical paths of mounted directories and skip mounting a path
+/// if its canonical form is inside an already-mounted canonical path.
+/// This handles both:
+/// - Explicit directory containment (B is subdirectory of A)
+/// - Symlink containment (home_epkg is symlink to /some/dir, store is inside /some/dir)
 #[cfg(feature = "libkrun")]
 fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<(String, String, String, bool)> {
     use std::fs;
-    use crate::models::dirs;
+    use crate::models::{dirs, config};
 
     // TODO: On Linux, bind mounts should be performed before VM start,
     // then single virtiofs sharing env_root suffices.
     // Currently we use multiple virtiofs mounts on all platforms.
 
-    let mut mounts = Vec::new();
-    // Track (canonical_host_path, guest_path) pairs to avoid duplicate mounts.
-    // This allows same host path to be mounted to different guest paths.
-    let mut seen_mounts: Vec<(std::path::PathBuf, String)> = Vec::new();
+    let mut mounts: Vec<(String, String, String, bool)> = Vec::new();
+    // Track canonical paths of mounted directories.
+    // Used to detect containment: if canonical(B) starts with canonical(A), skip B.
+    let mut mounted_canonicals: Vec<std::path::PathBuf> = Vec::new();
 
-    // Helper to add a mount if path is a directory and not already seen
-    // guest_path defaults to host_path if not specified
-    let mut try_add_mount = |host_path: &Path, guest_path: Option<&Path>, read_only: bool, try_only: bool| {
+    // Helper to check if a canonical path is covered by any already-mounted path.
+    fn is_path_covered(canonical: &std::path::PathBuf, mounted: &[std::path::PathBuf]) -> bool {
+        mounted.iter().any(|m| canonical == m || canonical.starts_with(m))
+    }
+
+    // Helper to add a mount if path is a directory and not covered by existing mounts.
+    // All mounts are rw; permission control is done by host kernel via virtiofs.
+    fn do_add_mount(
+        host_path: &Path,
+        guest_path_opt: Option<&Path>,
+        read_only: bool,
+        try_only: bool,
+        mounts: &mut Vec<(String, String, String, bool)>,
+        mounted_canonicals: &mut Vec<std::path::PathBuf>,
+    ) {
         let path_str = host_path.to_string_lossy().to_string();
 
         // Skip if not a directory (virtiofs only supports directories)
@@ -773,10 +780,7 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
                 log::warn!("libkrun: cannot access mount path {}: {}", host_path.display(), e);
                 return;
             }
-            Err(_) => {
-                // try_only=true, silently skip
-                return;
-            }
+            Err(_) => return, // try_only=true, silently skip
         };
 
         // Canonicalize to resolve symlinks
@@ -788,170 +792,97 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
             }
         };
 
-        // Determine guest path early to check for duplicates
-        let guest = guest_path
+        // Skip if already covered by a previous mount (containment detection)
+        if is_path_covered(&canonical, mounted_canonicals) {
+            log::debug!("libkrun: skipping mount (covered by existing): {}", host_path.display());
+            return;
+        }
+
+        // Determine guest path: use host path for path consistency (unless explicitly provided)
+        let guest = guest_path_opt
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| {
                 // On Windows, convert host path to a valid Linux guest path.
-                // Windows paths like C:\Users\... or \\wsl.localhost\... are
-                // not valid Linux mount points.
                 #[cfg(target_os = "windows")]
-                {
-                    windows_path_to_linux_guest(&path_str)
-                }
+                { windows_path_to_linux_guest(&path_str) }
                 #[cfg(not(target_os = "windows"))]
-                {
-                    path_str.clone()
-                }
+                { path_str.clone() }
             });
-
-        // Skip if this exact (canonical, guest) mount is already done
-        if seen_mounts.iter().any(|(c, g)| c == &canonical && g == &guest) {
-            log::debug!("libkrun: skipping duplicate mount (same host+guest): {} -> {}", host_path.display(), guest);
-            return;
-        }
 
         // Generate a unique tag from the path
         let tag = generate_virtiofs_tag(host_path);
         log::debug!("libkrun: adding virtiofs mount: {} -> {} (guest: {}) ({})",
                    host_path.display(), tag, guest, if read_only { "ro" } else { "rw" });
-        mounts.push((tag, host_path.to_string_lossy().to_string(), guest.clone(), read_only));
-        seen_mounts.push((canonical, guest));
-    };
+        mounts.push((tag, host_path.to_string_lossy().to_string(), guest, read_only));
+        mounted_canonicals.push(canonical);
+    }
 
     // Add user-provided mount specs FIRST, before automatic mounts.
-    // This allows user mounts to take precedence and prevent duplicates.
     for mount_spec_str in &run_options.effective_sandbox.mount_specs {
         if let Some((host_path, guest_path, read_only, try_only)) = parse_mount_spec_for_virtiofs(mount_spec_str, env_root) {
-            try_add_mount(&host_path, Some(&guest_path), read_only, try_only);
+            do_add_mount(&host_path, Some(&guest_path), read_only, try_only, &mut mounts, &mut mounted_canonicals);
         }
     }
 
-    // Add epkg system directories
-    //
-    // We need to consider both host user (who owns the files being mounted)
-    // and guest user (who will run in the VM, via -u option).
-    //
-    // Combinations to handle:
-    // 1. Host root + Guest root: Mount to same paths, all writable
-    // 2. Host root + Guest non-root: Same paths, but guest may not write to root-owned files
-    // 3. Host non-root + Guest root: Mount to /opt/epkg, root can write anywhere
-    // 4. Host non-root + Guest same UID: Works if UIDs match
-    // 5. Host non-root + Guest different UID: Guest can't write to host-owned dirs
-    //
-    // For cases 2, 4, 5 where there's a UID mismatch, we rely on the guest init
-    // to set up a writable temp location (e.g., /tmp) for operations that need it.
-    // The key is to ensure downloads and cache writes work for the typical case
-    // (host non-root, guest root) which is the default VM behavior.
+    // Add epkg system directories following path consistency rule.
+    // All mounts are rw; permission control by host kernel.
+    let shared_store = config().init.shared_store;
 
-    // On Windows, we need special handling for virtiofs mounts.
-    // env.yaml stores DOS paths like C:\Users\aa\.epkg\envs\alpine
-    // These convert to /mnt/c/Users/aa/.epkg/envs/alpine in Linux guest.
-    // We must mount home_epkg to the converted path, NOT to /root/.epkg or /opt/epkg,
-    // so that env.yaml paths are valid in the guest.
+    // On Windows, home_cache is inside home_epkg, opt_epkg uses different layout.
     #[cfg(target_os = "windows")]
     {
-        // On Windows, always mount to the converted Linux guest path
-        // This ensures env.yaml DOS paths work after conversion
-        try_add_mount(&dirs().epkg_store, None, true, true);
-        try_add_mount(&dirs().home_epkg, None, false, true);  // Mount to /mnt/c/Users/... (converted path)
-        try_add_mount(&dirs().home_cache, None, false, true);
-        // Don't mount opt_epkg on Windows - paths are under home_epkg
+        do_add_mount(&dirs().home_epkg, None, false, true, &mut mounts, &mut mounted_canonicals);
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        #[cfg(unix)]
-        let is_host_root = run_options.host_uid.map_or(false, |uid| uid == 0);
-        #[cfg(not(unix))]
-        let is_host_root = false;
+        // home_epkg: always mount (rw) - core user config and envs
+        do_add_mount(&dirs().home_epkg, None, false, true, &mut mounts, &mut mounted_canonicals);
 
-        #[cfg(unix)]
-        let is_guest_root = run_options.user.as_ref().map_or(true, |u| u == "root" || u == "0");
-        #[cfg(not(unix))]
-        let is_guest_root = true;
-
-        if is_host_root {
-            // For host root: mount to same path in guest (host path = guest path)
-            // Mount store directory for symlinks in cross-filesystem environments.
-            // Symlinks in temp directories point to store, so VM needs access at the original path.
-            try_add_mount(&dirs().epkg_store, None, true, true);
-            try_add_mount(&dirs().home_epkg, None, false, true);
-            try_add_mount(&dirs().home_cache, None, false, true);
-            #[cfg(unix)]
-            try_add_mount(&dirs().opt_epkg, None, false, true);
-            // Tool config is at ~/.epkg/config/tool which is under home_epkg, already mounted.
-        } else if is_guest_root {
-            // For non-root host + root guest: use path consistency mounts (same paths as host).
-            //
-            // Per docs/zh/architecture/env-path.md, guest should see the same paths as host:
-            //   /home/wfg/.epkg → /home/wfg/.epkg (rw)
-            //   /home/wfg/.cache → /home/wfg/.cache (rw)
-            //
-            // This ensures:
-            // - Config paths (env.yaml) are valid in guest
-            // - Disk space checks work (virtiofs returns proper filesystem stats)
-            // - Install/remove operations can write to store
-            //
-            // Guest root's determine_shared_store() will check /opt/epkg/envs (doesn't exist)
-            // and $HOME/.epkg/envs (exists via rw mount), returning false correctly.
-            //
-            // NOTE: The old design mounted home_epkg to /root/.epkg (rw) and original path ro.
-            // That broke path consistency and caused "available 0 B" disk space errors.
-            try_add_mount(&dirs().home_epkg, None, false, true);    // rw at original path
-            try_add_mount(&dirs().home_cache, None, false, true);    // rw at original path
-        } else {
-            // For non-root host + non-root guest: mount to same paths
-            // The guest user will have the same UID as the host user (via virtiofs
-            // passthrough), so they can access their own files
-            // Mount store for symlink resolution in cross-filesystem environments
-            try_add_mount(&dirs().epkg_store, None, true, true);
-            try_add_mount(&dirs().home_epkg, None, false, true);
-            try_add_mount(&dirs().home_cache, None, false, true);
-            // Don't mount host /opt/epkg - not writable by non-root user
-            // Tool config is at ~/.epkg/config/tool which is under home_epkg, already mounted.
+        // opt_epkg: mount if shared_store mode
+        // In shared_store, opt_epkg contains envs, store, cache
+        if shared_store {
+            do_add_mount(&dirs().opt_epkg, None, false, true, &mut mounts, &mut mounted_canonicals);
         }
+
+        // epkg_store: mount if not covered by home_epkg/opt_epkg
+        // do_add_mount() handles containment detection internally.
+        // In non-shared mode, store is inside home_epkg -> skipped.
+        // In shared mode, store is inside opt_epkg -> skipped.
+        // Only mounted if symlink to standalone dir outside these.
+        do_add_mount(&dirs().epkg_store, None, false, true, &mut mounts, &mut mounted_canonicals);
+
+        // home_cache: mount if not covered by home_epkg/opt_epkg
+        // do_add_mount() handles containment detection internally.
+        // macOS: ~/Library/Caches/epkg is standalone -> mounted.
+        // Linux non-shared: ~/.cache/epkg is standalone -> mounted.
+        // Linux shared: inside opt_epkg/cache -> skipped.
+        do_add_mount(&dirs().home_cache, None, false, true, &mut mounts, &mut mounted_canonicals);
     }
 
     // Mount current working directory if not chdir_to_env_root
-    // This allows VM guest to access files in the directory where epkg run was invoked
     if !run_options.chdir_to_env_root {
         if let Ok(cwd) = std::env::current_dir() {
             if cwd.is_absolute() && cwd.exists() {
                 log::debug!("libkrun: adding cwd mount: {}", cwd.display());
-                try_add_mount(&cwd, None, false, true);
+                do_add_mount(&cwd, None, false, true, &mut mounts, &mut mounted_canonicals);
             }
         }
     }
 
-    // Add epkg binary directory if outside env.
-    // This runs after user mounts so a broader user mount (e.g. /c/epkg)
-    // can cover the binary directory and avoid consuming an extra virtiofs device.
+    // Add epkg binary directory if outside mounted dirs
     if let Ok(epkg_exe) = std::env::current_exe() {
         if let Some(epkg_bin_dir) = epkg_exe.parent() {
-            if !epkg_bin_dir.starts_with(&dirs().home_epkg)
-               && !epkg_bin_dir.starts_with(&dirs().opt_epkg) {
-                try_add_mount(epkg_bin_dir, None, true, false);
-            }
+            do_add_mount(epkg_bin_dir, None, false, false, &mut mounts, &mut mounted_canonicals);
         }
     }
 
-    // Add epkg source directory for mirrors.json access.
-    // The source path is typically a symlink (e.g., ~/.epkg/envs/self/usr/src/epkg -> /path/to/epkg).
-    // We need to mount the actual source directory so nested epkg can access mirrors.json.
+    // Add epkg source directory for mirrors.json access
     let epkg_src_path = crate::dirs::get_epkg_src_path();
     if epkg_src_path.exists() {
-        // Resolve symlink to get the actual source directory
         match fs::canonicalize(&epkg_src_path) {
             Ok(resolved_src) => {
-                // Only mount if the resolved path is outside already-mounted directories
-                if !resolved_src.starts_with(&dirs().home_epkg)
-                   && !resolved_src.starts_with(&dirs().opt_epkg)
-                   && !resolved_src.starts_with(&dirs().epkg_store) {
-                    // Mount the source directory to the same path in guest
-                    // This makes mirrors.json accessible for nested epkg commands
-                    try_add_mount(&resolved_src, None, true, true);
-                }
+                do_add_mount(&resolved_src, None, false, true, &mut mounts, &mut mounted_canonicals);
             }
             Err(e) => {
                 log::debug!("libkrun: could not resolve epkg src path {}: {}", epkg_src_path.display(), e);
@@ -960,7 +891,7 @@ fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<
     }
 
     // Add /lib/modules if exists (for kernel module loading)
-    try_add_mount(Path::new("/lib/modules"), None, true, true);
+    do_add_mount(Path::new("/lib/modules"), None, false, true, &mut mounts, &mut mounted_canonicals);
 
     mounts
 }
