@@ -1815,30 +1815,39 @@ fn filter_hooks_by_when(hooks: &[Arc<Hook>], when: &HookWhen) -> Vec<Arc<Hook>> 
 }
 
 /// Run hooks belonging to a specific pkgkey over all packages.
+/// Returns set of executed hook names for deduplication.
 fn run_pkgkey_hooks(
     plan: &InstallationPlan,
     when: &HookWhen,
     pkgkey: &str,
-) -> Result<()> {
+) -> Result<std::collections::HashSet<String>> {
     let pkg_hooks = match plan.hooks_by_pkgkey.get(pkgkey) {
         Some(h) => h,
-        None => return Ok(()),
+        None => return Ok(std::collections::HashSet::new()),
     };
 
     let relevant_hooks = filter_hooks_by_when(pkg_hooks, when);
 
     let triggered_hooks = find_triggered_hooks(&relevant_hooks, plan, None)?;
 
+    // Track executed hook names
+    let mut executed_hooks = std::collections::HashSet::new();
+    for (hook, _) in &triggered_hooks {
+        executed_hooks.insert(hook.hook_name.clone());
+    }
+
     execute_triggered_hooks(triggered_hooks, plan, when)?;
 
-    Ok(())
+    Ok(executed_hooks)
 }
 
 /// Run all hooks on a specific pkgkey, restricting trigger evaluation to that pkgkey.
+/// Skips hooks that were already executed (based on executed_hooks set).
 fn run_hooks_on_pkgkey(
     plan: &InstallationPlan,
     when: &HookWhen,
     pkgkey: &str,
+    executed_hooks: std::collections::HashSet<String>,
 ) -> Result<()> {
     // Get hooks for this When timing
     let relevant_hooks = match plan.hooks_by_when.get(&when) {
@@ -1848,7 +1857,13 @@ fn run_hooks_on_pkgkey(
 
     let triggered_hooks = find_triggered_hooks(&relevant_hooks, plan, Some(pkgkey))?;
 
-    execute_triggered_hooks(triggered_hooks, plan, when)?;
+    // Filter out already executed hooks
+    let filtered_hooks: Vec<_> = triggered_hooks
+        .into_iter()
+        .filter(|(hook, _)| !executed_hooks.contains(&hook.hook_name))
+        .collect();
+
+    execute_triggered_hooks(filtered_hooks, plan, when)?;
 
     Ok(())
 }
@@ -1856,12 +1871,17 @@ fn run_hooks_on_pkgkey(
 /// Run both:
 /// - hooks belonging to `pkgkey` over all packages (`run_pkgkey_hooks`)
 /// - all hooks on `pkgkey` with triggers restricted to that pkg (`run_hooks_on_pkgkey`)
+///
+/// Deduplicates hooks to avoid double execution when a hook both belongs to pkgkey
+/// AND triggers on pkgkey changes.
 pub fn run_pkgkey_hooks_pair(
     plan: &InstallationPlan,
     when: HookWhen,
     pkgkey: &str,
 ) -> Result<()> {
-    run_pkgkey_hooks(plan, &when, pkgkey)?;
-    run_hooks_on_pkgkey(plan, &when, pkgkey)?;
+    // First run hooks owned by this pkgkey
+    let executed_hooks = run_pkgkey_hooks(plan, &when, pkgkey)?;
+    // Then run hooks triggering on this pkgkey, skipping already executed ones
+    run_hooks_on_pkgkey(plan, &when, pkgkey, executed_hooks)?;
     Ok(())
 }

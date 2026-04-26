@@ -155,6 +155,7 @@ pub fn execute_via_existing_vm(
         None,  // extend_timeout_secs
         env_vars,
         cwd,
+        None,  // stdin - execute_via_existing_vm doesn't pass stdin
         stream,
     )?;
 
@@ -197,6 +198,7 @@ pub fn execute_via_existing_vm(
         None,  // extend_timeout_secs
         env_vars,
         cwd,
+        None,  // stdin - execute_via_existing_vm doesn't pass stdin
         stream,
     )?;
 
@@ -1656,6 +1658,7 @@ fn try_reuse_existing_krun_session(
                     log::debug!("libkrun: Guest reconnected, sending command...");
                     let cwd_str;
                     let cwd = if run_options.chdir_to_env_root { Some("/") } else { cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()); cwd_str.as_deref() };
+                    let stdin_data = run_options.stdin.as_ref().map(|v| v.as_slice());
                     match super::stream::send_command_over_stream(
                         &config.cmd_parts,
                         run_options.io_mode,
@@ -1664,6 +1667,7 @@ fn try_reuse_existing_krun_session(
                         None,  // extend_timeout_secs
                         Some(&run_options.env_vars),
                         cwd,
+                        stdin_data,
                         stream,
                     ) {
                         Ok(exit_code) => {
@@ -1703,6 +1707,7 @@ fn try_reuse_existing_krun_session(
         // Forward mode: Host connects to Guest
         let cwd_str;
         let cwd = if run_options.chdir_to_env_root { Some("/") } else { cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()); cwd_str.as_deref() };
+        let stdin_data = run_options.stdin.as_ref().map(|v| v.as_slice());
         match super::stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.io_mode,
@@ -1712,6 +1717,7 @@ fn try_reuse_existing_krun_session(
             &sock,
             Some(&run_options.env_vars),
             cwd,
+            stdin_data,
         ) {
             Ok(code) => Ok(Some(code)),
             Err(e) => {
@@ -1744,6 +1750,7 @@ fn send_session_done_unix(sock_path: &Path) -> Result<()> {
         None,
         None,
         None, // cwd - session done doesn't need working directory
+        None, // stdin - session done doesn't need stdin
     ))?;
     #[cfg(unix)]
     {
@@ -2011,6 +2018,7 @@ fn run_reverse_vsock_mode_inner(
     // Determine working directory for VM
     let cwd_str;
     let cwd = if run_options.chdir_to_env_root { Some("/") } else { cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()); cwd_str.as_deref() };
+    let stdin_data = run_options.stdin.as_ref().map(|v| v.as_slice());
 
     // Send command over the accepted connection
     // On Windows, use the named-pipe-specific function that calls FlushFileBuffers
@@ -2023,6 +2031,7 @@ fn run_reverse_vsock_mode_inner(
         None,  // extend_timeout_secs
         Some(&run_options.env_vars),
         cwd,
+        stdin_data,
         stream,
     ) {
         Ok(code) => {
@@ -2044,6 +2053,7 @@ fn run_reverse_vsock_mode_inner(
         None,  // extend_timeout_secs
         Some(&run_options.env_vars),
         cwd,
+        stdin_data,
         stream,
     ) {
         Ok(code) => {
@@ -2250,6 +2260,7 @@ pub fn run_command_in_krun(
         crate::debug_epkg!("libkrun: sending command via vsock...");
         let cwd_str;
         let cwd = if run_options.chdir_to_env_root { Some("/") } else { cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()); cwd_str.as_deref() };
+        let stdin_data = run_options.stdin.as_ref().map(|v| v.as_slice());
         let exit_code = super::stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.io_mode,
@@ -2259,6 +2270,7 @@ pub fn run_command_in_krun(
             &vsock_sock_path,
             Some(&run_options.env_vars),
             cwd,
+            stdin_data,
         )
         .map_err(|e| eyre::eyre!("Failed to send command via vsock bridge: {}", e))?;
         log::debug!("libkrun: vsock command completed with exit code {}", exit_code);

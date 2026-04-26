@@ -1246,9 +1246,14 @@ fn execute_without_pty(request: &CommandRequest, stream: &mut TcpStream, initial
                 let mut stderr_file = stderr;
 
                 // Write request.stdin field if provided
+                // stdin is base64-encoded in the JSON request for safe transport
                 if !request.stdin.is_empty() {
                     if let Some(ref mut stdin) = stdin_file {
-                        stdin.write_all(request.stdin.as_bytes())?;
+                        use base64::Engine;
+                        let decoded = base64::engine::general_purpose::STANDARD
+                            .decode(&request.stdin)
+                            .map_err(|e| color_eyre::eyre::eyre!("Failed to decode base64 stdin: {}", e))?;
+                        stdin.write_all(&decoded)?;
                     }
                 }
 
@@ -1356,10 +1361,15 @@ fn execute_batch(request: &CommandRequest, stream: &mut TcpStream) -> Result<i32
                 debug_file_write(&format!("execute_batch: child spawned, pid={}\n", pid));
 
                 // Write stdin if provided, then close it
+                // stdin is base64-encoded in the JSON request for safe transport
                 if !request.stdin.is_empty() {
                     if let Some(ref mut stdin_ref) = stdin {
                         use std::io::Write;
-                        stdin_ref.write_all(request.stdin.as_bytes())?;
+                        use base64::Engine;
+                        let decoded = base64::engine::general_purpose::STANDARD
+                            .decode(&request.stdin)
+                            .map_err(|e| color_eyre::eyre::eyre!("Failed to decode base64 stdin: {}", e))?;
+                        stdin_ref.write_all(&decoded)?;
                     }
                 }
                 drop(stdin);
