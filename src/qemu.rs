@@ -866,7 +866,7 @@ fn handle_guest_execution(
                 }
 
                 // Return 0 to signal VM ready, but DON'T wait for QEMU here
-                // The cleanup_rootfs and exit will happen after we return
+                // The cleanup_virtiofsd_child and exit will happen after we return
                 // QEMU continues running based on vm_keep_timeout
                 return Ok(0);  // Return 0 to signal success
             }
@@ -944,8 +944,9 @@ fn handle_guest_execution(
     }
 }
 
-/// Cleanup virtiofsd process if we own it (for RootFsMode::Virtiofs only).
-fn cleanup_rootfs(rootfs_mode: RootFsMode) {
+/// Cleanup virtiofsd child process if we own it (for RootFsMode::Virtiofs only).
+/// Called when QEMU spawn fails or after QEMU exits normally.
+fn cleanup_virtiofsd_child(rootfs_mode: RootFsMode) {
     if let RootFsMode::Virtiofs(Some((_, mut virtiofsd_child)), _) = rootfs_mode {
         let _ = virtiofsd_child.kill();
         let _ = virtiofsd_child.wait();
@@ -1046,7 +1047,7 @@ pub fn run_command_in_qemu(
     let init_cmd_append = if use_cmdline_mode { Some(init_cmd.as_str()) } else { None };
     let init_user_append = if use_cmdline_mode { run_options.user.as_deref() } else { None };
 
-    let mut qemu_child = spawn_qemu(
+    let mut qemu_child = match spawn_qemu(
         &setup.kernel,
         &setup.initrd,
         &setup.qemu_bin,
@@ -1060,9 +1061,16 @@ pub fn run_command_in_qemu(
         vm_memory_mb,
         init_cmd_append,
         init_user_append,
-    )?;
+    ) {
+        Ok(child) => child,
+        Err(e) => {
+            // QEMU spawn failed - clean up virtiofsd before returning error
+            cleanup_virtiofsd_child(setup.rootfs_mode);
+            return Err(e);
+        }
+    };
 
-    let exit_code = handle_guest_execution(
+    let exit_code = match handle_guest_execution(
         &mut qemu_child,
         use_control_channel,
         use_vsock,
@@ -1073,22 +1081,29 @@ pub fn run_command_in_qemu(
         run_options.user.as_deref(),
         run_options.vm_daemon,
         vm_daemon_ready_fd,
-    )?;
+    ) {
+        Ok(code) => code,
+        Err(e) => {
+            // Guest execution failed - clean up virtiofsd before returning error
+            cleanup_virtiofsd_child(setup.rootfs_mode);
+            return Err(e);
+        }
+    };
 
     // For vm_daemon mode: child keeps running, waiting for QEMU to complete
-    // cleanup_rootfs and exit happen after QEMU exits (VM timeout)
+    // cleanup_virtiofsd_child and exit happen after QEMU exits (VM timeout)
     if run_options.vm_daemon {
         log::info!("qemu: daemon mode - waiting for QEMU to complete (VM timeout)");
         // Wait for QEMU process to complete (VM will shut down after vm_keep_timeout)
         let status = qemu_child.wait()
             .map_err(|e| eyre::eyre!("Failed to wait for QEMU process: {}", e))?;
         log::info!("qemu: VM daemon exited with status {:?}", status);
-        cleanup_rootfs(setup.rootfs_mode);
+        cleanup_virtiofsd_child(setup.rootfs_mode);
         // Exit with 0 (success)
         std::process::exit(0);
     }
 
-    cleanup_rootfs(setup.rootfs_mode);
+    cleanup_virtiofsd_child(setup.rootfs_mode);
 
     std::process::exit(exit_code);
 }
