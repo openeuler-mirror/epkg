@@ -314,19 +314,15 @@ pub fn run_transaction_batch(
     // Process each package operation in order (rpmtsProcess style)
     log::debug!("run_transaction_batch: starting process_package_operations");
     process_package_operations(plan)?;
-    log::debug!("run_transaction_batch: process_package_operations completed, now running PostTransaction hooks");
-
-    // Run PostTransaction hooks
-    log::debug!("run_transaction_batch: about to run PostTransaction hooks");
-    run_hooks(plan, HookWhen::PostTransaction)?;
-    log::debug!("run_transaction_batch: PostTransaction hooks completed");
+    log::debug!("run_transaction_batch: process_package_operations completed");
 
     // Run ldconfig if needed (after all package operations complete) - Unix only
     #[cfg(unix)]
     run_ldconfig_if_needed(&plan.env_root)?;
 
-    // Execute transaction scriptlets: %posttrans of packages being installed/upgraded
+    // Execute transaction scriptlets and hooks: %posttrans, %postuntrans, PostUnTrans, PostTransaction
     // This runs AFTER all file operations complete (RPM behavior)
+    // end_transaction() handles PostTransaction hooks - don't duplicate here
     end_transaction(plan)?;
 
     #[cfg(feature = "libkrun")]
