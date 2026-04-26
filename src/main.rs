@@ -187,7 +187,7 @@ use time::macros::format_description;
 use crate::models::*;
 use crate::dirs::*;
 use crate::environment::*;
-use crate::io::{edit_environment_config, load_installed_packages, read_yaml_file, CHANNEL_SEPARATOR};
+use crate::io::{edit_environment_config, read_yaml_file, CHANNEL_SEPARATOR};
 use crate::path::update_path;
 use crate::repo::sync_channel_metadata;
 use crate::list::list_packages_with_scope;
@@ -2495,12 +2495,6 @@ fn command_list(sub_matches: &clap::ArgMatches) -> Result<()> {
 }
 
 fn command_info(sub_matches: &clap::ArgMatches) -> Result<()> {
-    // First call sync_channel_metadata to prepare data
-    sync_channel_metadata()?;
-
-    // Load installed packages info
-    load_installed_packages()?;
-
     // Get all arguments (package specs and key=val filters combined)
     let mut all_args: Vec<String> = Vec::new();
 
@@ -2514,7 +2508,7 @@ fn command_info(sub_matches: &clap::ArgMatches) -> Result<()> {
     let show_scripts = sub_matches.get_flag("scripts");
     let show_store_path = sub_matches.get_flag("store-path");
 
-    // Use the info module function
+    // Use the info module function (it handles sync_channel_metadata and load_installed_packages)
     crate::info::show_package_info(
         &all_args,
         show_files,

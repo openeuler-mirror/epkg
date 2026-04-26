@@ -43,6 +43,13 @@ const LINUX_ONLY: &[&str] = &[
     "rpm",
     "rpmlua",
 
+    // Package manager compatibility shims for Linux distros
+    "apk",      // Alpine apk
+    "apt",      // Debian/Ubuntu apt
+    "apt_get",  // Debian/Ubuntu apt-get alias
+    "dnf",      // Fedora/RHEL dnf
+    "yum",      // Fedora/RHEL yum alias
+
     "systemd_sysusers",
     "systemd_tmpfiles",
 ];

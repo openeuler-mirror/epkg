@@ -12,6 +12,10 @@ pub fn show_package_info(
     show_scripts: bool,
     show_store_path: bool,
 ) -> Result<()> {
+    // Ensure metadata and installed packages are loaded
+    crate::repo::sync_channel_metadata()?;
+    crate::io::load_installed_packages()?;
+
     // Separate package specs from key=val filters
     let (package_specs, filters) = parse_args_and_filters(all_args);
 
