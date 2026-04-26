@@ -133,3 +133,7 @@ pub use core::execute_via_existing_vm;
 /// Cleans up VM resources and unregisters the session.
 #[cfg(feature = "libkrun")]
 pub use core::shutdown_vm_reuse_session_if_active;
+
+/// Convert a Windows path to a valid Linux guest path for virtiofs mounts.
+#[cfg(all(feature = "libkrun", target_os = "windows"))]
+pub use core::windows_path_to_linux_guest;

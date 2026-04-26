@@ -973,7 +973,7 @@ fn parse_mount_spec_for_virtiofs(spec_str: &str, env_root: &Path) -> Option<(std
 /// - C:\Users\aa\.epkg -> /mnt/c/Users/aa/.epkg (convert drive letter to /mnt/X)
 /// - \\\\?\\C:\Users\... -> /mnt/c/Users/... (strip extended-length prefix)
 #[cfg(target_os = "windows")]
-fn windows_path_to_linux_guest(win_path: &str) -> String {
+pub fn windows_path_to_linux_guest(win_path: &str) -> String {
     // Handle WSL2 UNC paths: \\wsl.localhost\Distro\linux_path
     // Extract the Linux path portion after the distro name
     if win_path.starts_with("\\\\wsl.localhost\\") || win_path.starts_with("\\\\wsl$\\") {

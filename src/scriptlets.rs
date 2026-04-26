@@ -7,133 +7,49 @@ use crate::lfs;
 use color_eyre::eyre::{eyre, Result};
 
 /// Convert a host path to a guest path for VM execution.
-/// On macOS/Windows with libkrun VM, paths are mounted according to build_virtiofs_mount_specs() logic.
-/// On Linux, paths are the same (namespace isolation).
+/// On macOS/Windows with libkrun VM, paths are mounted at the SAME path per virtiofs config.
+/// Per docs/zh/architecture/env-path.md: "路径一致性方案：Mount host 路径到 guest 的相同路径"
 ///
-/// Guest mount logic (from build_virtiofs_mount_specs):
-/// - host_root + guest_root: same path (host path = guest path)
-/// - host_nonroot + guest_root: home_epkg → /root/.epkg, home_cache → /root/.cache
-/// - host_nonroot + guest_nonroot: same path (UIDs match via virtiofs)
+/// Virtiofs mount logic (from build_virtiofs_mount_specs):
+/// - home_epkg: mounted at SAME path (guest_path = host_path)
+/// - home_cache: mounted at SAME path (guest_path = host_path)
+/// - env_root: mounted at "/" via virtiofs root device
+///
+/// For paths under env_root, strip prefix to get guest path like "/usr/bin/..."
+/// For paths outside env_root (home_epkg, home_cache, cwd), use SAME host path.
 #[cfg(not(target_os = "linux"))]
 pub fn host_path_to_guest_path(host_path: &std::path::Path) -> std::path::PathBuf {
-    use crate::models::dirs;
+    use crate::models::config;
 
-    let home_epkg = dirs().home_epkg.clone();
-    let home_cache = dirs().home_cache.clone();
-
-    // Canonicalize home_epkg/home_cache to resolve symlinks (e.g., ~/.epkg -> /Volumes/epkg)
-    // for consistent prefix matching. But DO NOT canonicalize host_path itself,
-    // because symlinks like /usr/bin/rpmlua -> epkg determine busybox applet identity.
-    // The basename of the symlink (e.g., "rpmlua") is used by busybox to identify the applet.
-    let home_epkg_resolved = std::fs::canonicalize(&home_epkg).unwrap_or_else(|_| home_epkg.clone());
-    let home_cache_resolved = std::fs::canonicalize(&home_cache).unwrap_or_else(|_| home_cache.clone());
-
-    log::debug!("host_path_to_guest_path: host_path={:?} home_epkg={:?} home_epkg_resolved={:?}",
-                host_path, home_epkg, home_epkg_resolved);
-
-    // Determine guest mount paths based on host/guest UID combination
-    // This mirrors the logic in build_virtiofs_mount_specs()
-    #[cfg(unix)]
-    let is_host_root = unsafe { libc::getuid() == 0 };
-    #[cfg(not(unix))]
-    let is_host_root = false;
-
-    // Guest runs as root by default (no -u option or -u root)
-    // For scriptlets, guest always runs as root in current implementation
-    let is_guest_root = true;
-
-    if is_host_root {
-        // host_root + guest_root: same path (no transformation needed)
-        // Try to strip home_epkg prefix and use same path
-        if let Ok(relative) = host_path.strip_prefix(&home_epkg_resolved) {
+    // For env_root paths: strip env_root prefix to get guest "/" path
+    // env_root is mounted at "/" via virtiofs root device (krun_set_root)
+    let env_root_str = config().common.env_root.clone();
+    if !env_root_str.is_empty() {
+        let env_root = std::path::PathBuf::from(&env_root_str);
+        if let Ok(relative) = host_path.strip_prefix(&env_root) {
             #[cfg(windows)]
             let relative_str = relative.to_string_lossy().replace('\\', "/");
             #[cfg(not(windows))]
             let relative_str = relative.to_string_lossy();
             let result = std::path::PathBuf::from(format!("/{}", relative_str.trim_start_matches('/')));
-            log::debug!("host_path_to_guest_path: host_root case, result={:?}", result);
+            log::debug!("host_path_to_guest_path: env_root path {:?} -> {:?}", host_path, result);
             return result;
         }
-        // Path not under home_epkg, use original path
-        #[cfg(windows)]
-        {
-            let path_str = host_path.to_string_lossy().replace('\\', "/");
-            std::path::PathBuf::from(path_str)
-        }
-        #[cfg(not(windows))]
-        {
-            host_path.to_path_buf()
-        }
-    } else if is_guest_root {
-        // host_nonroot + guest_root: home_epkg → /root/.epkg, home_cache → /root/.cache
-        // This is the most common case for macOS users running epkg without -u
+    }
 
-        // Check if path is under home_epkg (try resolved home_epkg with unresolved host_path)
-        if let Ok(relative) = host_path.strip_prefix(&home_epkg_resolved) {
-            #[cfg(windows)]
-            let relative_str = relative.to_string_lossy().replace('\\', "/");
-            #[cfg(not(windows))]
-            let relative_str = relative.to_string_lossy();
-            let result = std::path::PathBuf::from(format!("/root/.epkg/{}", relative_str.trim_start_matches('/')));
-            log::debug!("host_path_to_guest_path: guest_root + home_epkg, result={:?}", result);
-            return result;
-        }
-
-        // Also try unresolved paths (in case home_epkg wasn't canonicalized)
-        if let Ok(relative) = host_path.strip_prefix(&home_epkg) {
-            #[cfg(windows)]
-            let relative_str = relative.to_string_lossy().replace('\\', "/");
-            #[cfg(not(windows))]
-            let relative_str = relative.to_string_lossy();
-            let result = std::path::PathBuf::from(format!("/root/.epkg/{}", relative_str.trim_start_matches('/')));
-            log::debug!("host_path_to_guest_path: guest_root + home_epkg (unresolved), result={:?}", result);
-            return result;
-        }
-
-        // Check if path is under home_cache (try resolved home_cache with unresolved host_path)
-        if let Ok(relative) = host_path.strip_prefix(&home_cache_resolved) {
-            #[cfg(windows)]
-            let relative_str = relative.to_string_lossy().replace('\\', "/");
-            #[cfg(not(windows))]
-            let relative_str = relative.to_string_lossy();
-            let result = std::path::PathBuf::from(format!("/root/.cache/{}", relative_str.trim_start_matches('/')));
-            log::debug!("host_path_to_guest_path: guest_root + home_cache, result={:?}", result);
-            return result;
-        }
-
-        if let Ok(relative) = host_path.strip_prefix(&home_cache) {
-            #[cfg(windows)]
-            let relative_str = relative.to_string_lossy().replace('\\', "/");
-            #[cfg(not(windows))]
-            let relative_str = relative.to_string_lossy();
-            let result = std::path::PathBuf::from(format!("/root/.cache/{}", relative_str.trim_start_matches('/')));
-            log::debug!("host_path_to_guest_path: guest_root + home_cache (unresolved), result={:?}", result);
-            return result;
-        }
-
-        // Path not under home_epkg/home_cache, use original path
-        #[cfg(windows)]
-        {
-            let path_str = host_path.to_string_lossy().replace('\\', "/");
-            std::path::PathBuf::from(path_str)
-        }
-        #[cfg(not(windows))]
-        {
-            log::warn!("host_path_to_guest_path: cannot convert path {:?} (not under home_epkg/home_cache)", host_path);
-            host_path.to_path_buf()
-        }
-    } else {
-        // host_nonroot + guest_nonroot: same path (UIDs match via virtiofs)
-        // Guest user has same UID as host, so paths work directly
-        #[cfg(windows)]
-        {
-            let path_str = host_path.to_string_lossy().replace('\\', "/");
-            std::path::PathBuf::from(path_str)
-        }
-        #[cfg(not(windows))]
-        {
-            host_path.to_path_buf()
-        }
+    // For paths outside env_root (home_epkg, home_cache, cwd, etc):
+    // Use SAME host path per path consistency rule - virtiofs mounts them at same path.
+    // This matches build_virtiofs_mount_specs which sets guest_path = host_path.
+    #[cfg(windows)]
+    {
+        // Convert Windows path to Linux guest path format
+        let path_str = host_path.to_string_lossy().replace('\\', "/");
+        std::path::PathBuf::from(crate::libkrun::windows_path_to_linux_guest(&path_str))
+    }
+    #[cfg(not(windows))]
+    {
+        log::debug!("host_path_to_guest_path: non-env_root path {:?} -> same path (virtiofs mount)", host_path);
+        host_path.to_path_buf()
     }
 }
 
