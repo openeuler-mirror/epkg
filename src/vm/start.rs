@@ -105,9 +105,12 @@ fn vm_start(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()> {
     // Register session with child PID (the process that supervises QEMU)
     // Note: The parent process (calling register_vm_session) will exit soon,
     // but the child (child_pid) continues to supervise the VM.
-    let socket_path = std::path::PathBuf::from("vsock:3");
     let daemon_pid = child_pid.map(|p| p as u32).unwrap_or_else(std::process::id);
-    crate::vm::register_vm_session(env_root, env_name, &socket_path, "qemu", &config, daemon_pid)?;
+    #[cfg(any(feature = "libkrun", target_os = "linux"))]
+    {
+        let socket_path = std::path::PathBuf::from("vsock:3");
+        crate::vm::register_vm_session(env_root, env_name, &socket_path, "qemu", &config, daemon_pid)?;
+    }
 
     log::info!("vm_start: VM session registered for {} (daemon_pid={})", env_name, daemon_pid);
     Ok(())
