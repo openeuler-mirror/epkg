@@ -2,7 +2,7 @@
 
 **[Chinese|中文文档](README.zh.md)**
 
-A lightweight, multi-source package manager for Linux. Create isolated **environments** and install packages from major Linux distributions (RPM, DEB, Alpine, Arch, Conda) without root. Each environment is tied to a **channel** (e.g. Debian, Fedora, Alpine with version). Register multiple environments to combine their binaries in your PATH and mix software from different distros in one shell.
+A lightweight, multi-source package manager for Linux, macOS, and Windows. Create isolated **environments** and install packages from major software distributions (RPM, DEB, Alpine, Arch, Conda, Homebrew, MSYS2) without root. Each environment is tied to a **channel** (e.g. Debian, Fedora, Alpine with version). Register multiple environments to combine their binaries in your PATH and mix software from different distros in one shell.
 
 ```yaml
 # Conceptually
@@ -13,25 +13,23 @@ host: openeuler | centos | debian | ...
 
 ## Use cases
 
-- **End users** — Install extra or newer software from multiple sources; mix packages from different distros; atomic upgrades and rollback.
+- **End users** — Install and run software from multiple sources.
 - **Developers** — Define project dependencies in one environment (OS packages + language runtimes); reproducible, isolated envs.
 - **Containers / embedded** — Replace dnf/apt/apk/pacman with a smaller footprint (~100MB less for RPM, ~20MB for DEB) and optional busybox-style applets.
 - **Local AI / sandbox** — Lightweight environment for development and tools that need an isolated filesystem view.
 
-Scenarios 1-3 are supported; 4 is on the way.
-
 ## Features
 
 - **User-space installs** — No root required for normal use.
-- **Multi-distro support** — openEuler, Fedora, Debian, Ubuntu, Alpine, Arch Linux, AUR, Conda.
+- **Multi-distro support** — openEuler, Fedora, Debian, Ubuntu, Alpine, Arch Linux, AUR, Conda, Homebrew, MSYS2.
 - **Environment isolation** — Per-env channels; register multiple envs and combine their binaries in PATH.
 - **Efficient** — File-level deduplication, parallel/chunked downloads, ~1300 global mirrors, fast list/search (e.g. 17x faster than dnf).
-- **Portable** — Static musl binary (~11MB); optional busybox-style applets to replace dnf/apt in containers.
+- **Portable** — Static musl binary (~14MB); package manager with busybox-style applets to support distroless RPM/DEB/APK containers.
 - **Reliable** — SAT-based dependency resolution (resolvo), transaction history with rollback.
 
 ## Quick start
 
-**Linux/macOS:**
+**Linux, macOS, Windows WSL2:**
 ```bash
 curl -fsSL https://raw.atomgit.com/openeuler/epkg/raw/master/bin/install.sh | bash
 ```
@@ -43,11 +41,14 @@ irm https://raw.atomgit.com/openeuler/epkg/raw/master/bin/install.ps1 | iex
 
 Then start a new shell so PATH is updated.
 
+```bash
 # Create an environment and install/run packages
-epkg env create myenv -c alpine
-epkg -e myenv install htop bash
-epkg -e myenv run htop
-epkg -e myenv run bash
+epkg env create alpine -c alpine
+epkg -e alpine install htop bash
+epkg -e alpine run htop
+epkg -e alpine run --isolate=env bash  # run with minimal bind mounts (the default mode)
+epkg -e alpine run --isolate=fs bash   # run in chroot
+epkg -e alpine run --isolate=vm bash   # run in a VM
 ```
 
 Default environment is `main`. Use `-e ENV` to target another env, or `epkg env register <ENV>` to add an env to your PATH.
@@ -59,6 +60,8 @@ Default environment is `main`. Use `-e ENV` to target another env, or `epkg env 
 - **Alpine**: main, community
 - **Arch**: core, extra, multilib, AUR, arch4edu, etc.
 - **Conda**: conda-forge, main, free, and others
+- **Homebrew**: Bottle binary packages only ; usable in macOS and Linux
+- **MSYS2**: Windows only
 
 Run `epkg repo list` to see the full channel table.
 
@@ -69,6 +72,7 @@ Run `epkg repo list` to see the full channel table.
 | Self | `self install`, `self upgrade`, `self remove` |
 | Packages | `install`, `update`, `upgrade`, `remove`, `list`, `info`, `search` |
 | Environments | `env list`, `create`, `remove`, `register`, `unregister`, `activate`, `deactivate`, `export`, `path`, `config` |
+| VM | `vm start`, `stop`, `list`, `status` |
 | History | `history`, `restore <gen_id>` |
 | Execute | `run`, `service`, `busybox` |
 | Other | `gc`, `repo list`, `hash`, `unpack`, `convert` |
@@ -84,7 +88,7 @@ Details: [Paths and layout](docs/en/reference/paths.md).
 
 ## How it works (brief)
 
-- **`epkg run`** runs a command in the environment’s namespace (mount + user namespaces). The env’s `usr`, `etc`, `var` are bind-mounted so installed binaries and scriptlets run correctly.
+- **`epkg run`** offers three isolation modes: `--isolate=env` (default, mount + user namespaces with bind-mounts), `--isolate=fs` (chroot-based isolation), and `--isolate=vm` (VM-based isolation).
 - **Install flow**: Resolve (SAT solver) → Download+Unpack → Link (store → env) → Scriptlets → Triggers → Expose binaries to `ebin/` for PATH.
 
 ## Build from source
