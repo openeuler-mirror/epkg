@@ -75,7 +75,7 @@ _run_logged() {
         log_file="$log_dir/epkg-dev-projects-${OS:-?}-${LANG_NAME:-?}-${tag}-${RUN_COUNT}.log"
     fi
     _log_cmd "$cmd_display"
-    "$EPKG_BIN" -e "$ENV_NAME" "$@" > "$log_file" 2>&1
+    "$EPKG_BIN" -e "$ENV_NAME" "$@" > "$log_file"
     r=$?
     _check_log_and_fail "$log_file" "$cmd_display"
     cat "$log_file"
