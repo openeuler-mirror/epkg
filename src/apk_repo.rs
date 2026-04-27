@@ -62,6 +62,8 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
     process_concatenated_gzip_streams_streaming(receiver_reader, &mut derived_files, &revise.location)?;
 
     log::debug!("Finalizing processing for {}", revise.location);
+    derived_files.on_essential("alpine-release".to_string());
+    derived_files.on_essential("alpine-baselayout".to_string());
     derived_files.on_finish(revise)
         .map_err(|e| eyre::eyre!("Failed to finalize processing for {}: {}", revise.location, e))
 }
