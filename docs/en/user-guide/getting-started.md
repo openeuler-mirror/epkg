@@ -4,13 +4,17 @@ This guide walks you through installing epkg and running your first package oper
 
 ## Installing epkg
 
+**Linux, macOS, Windows WSL2:**
 ```bash
-wget https://raw.atomgit.com/openeuler/epkg/raw/master/bin/epkg-installer.sh
-bash epkg-installer.sh
-
-# Then start a new shell so PATH is updated
-bash
+curl -fsSL https://raw.atomgit.com/openeuler/epkg/raw/master/bin/install.sh | bash
 ```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.atomgit.com/openeuler/epkg/raw/master/bin/install.ps1 | iex
+```
+
+Then start a new shell so PATH is updated.
 
 ## First environment and package
 
@@ -19,19 +23,19 @@ By default you have a `main` environment. Create another environment with a spec
 1. **Create an environment** (e.g. Alpine):
 
    ```bash
-   epkg env create myenv -c alpine
+   epkg env create alpine -c alpine
    ```
 
    Example output:
 
    ```
-   Creating environment 'myenv' in $HOME/.epkg/envs/myenv
+   Creating environment 'alpine' in $HOME/.epkg/envs/alpine
    ```
 
 2. **Install packages in that environment**:
 
    ```bash
-   epkg -e myenv install bash jq
+   epkg -e alpine install bash jq
    ```
 
    You will see a dependency plan and download/install progress. Example summary:
@@ -54,14 +58,19 @@ By default you have a `main` environment. Create another environment with a spec
 3. **Run a command from that environment**:
 
    ```bash
-   epkg -e myenv run jq --version
+   epkg -e alpine run jq --version
    # e.g. jq-1.8.1
+
+   # Three isolation modes are available:
+   epkg -e alpine run --isolate=env bash  # default: mount + user namespaces
+   epkg -e alpine run --isolate=fs bash   # chroot-based isolation
+   epkg -e alpine run --isolate=vm bash   # VM-based isolation
    ```
 
    Or register the environment so its binaries are on your PATH for daily cli use:
 
    ```bash
-   epkg env register myenv
+   epkg env register alpine
    # epkg() will auto run: eval "$(epkg env path)" to update PATH in your current shell
    jq --version
    ```
@@ -69,7 +78,7 @@ By default you have a `main` environment. Create another environment with a spec
 ## Verify installation
 
 - List environments: `epkg env list`
-- List packages in an env: `epkg -e myenv list`
+- List packages in an env: `epkg -e alpine list`
 - Show env PATH: `epkg env path`
 
 ## Common workflows

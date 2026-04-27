@@ -4,13 +4,17 @@
 
 ## 安装 epkg
 
+**Linux、macOS、Windows WSL2：**
 ```bash
-wget https://raw.atomgit.com/openeuler/epkg/raw/master/bin/epkg-installer.sh
-bash epkg-installer.sh
-
-# 然后启动一个新的 shell 以更新 PATH
-bash
+curl -fsSL https://raw.atomgit.com/openeuler/epkg/raw/master/bin/install.sh | bash
 ```
+
+**Windows (PowerShell)：**
+```powershell
+irm https://raw.atomgit.com/openeuler/epkg/raw/master/bin/install.ps1 | iex
+```
+
+然后启动一个新的 shell 以更新 PATH。
 
 ## 第一个环境和包
 
@@ -19,19 +23,19 @@ bash
 1. **创建一个环境**（例如 Alpine）：
 
    ```bash
-   epkg env create myenv -c alpine
+   epkg env create alpine -c alpine
    ```
 
    示例输出：
 
    ```
-   在 $HOME/.epkg/envs/myenv 中创建环境 'myenv'
+   在 $HOME/.epkg/envs/alpine 中创建环境 'alpine'
    ```
 
 2. **在该环境中安装包**：
 
    ```bash
-   epkg -e myenv install bash jq
+   epkg -e alpine install bash jq
    ```
 
    您将看到依赖计划和下载/安装进度。示例摘要：
@@ -54,14 +58,19 @@ bash
 3. **从该环境运行命令**：
 
    ```bash
-   epkg -e myenv run jq --version
+   epkg -e alpine run jq --version
    # 例如 jq-1.8.1
+
+   # 提供三种隔离模式：
+   epkg -e alpine run --isolate=env bash  # 默认：bind mount
+   epkg -e alpine run --isolate=fs bash   # 基于 chroot 的隔离
+   epkg -e alpine run --isolate=vm bash   # 基于 VM 的隔离
    ```
 
    或者注册环境，以便其二进制文件在您的 PATH 上供日常 CLI 使用：
 
    ```bash
-   epkg env register myenv
+   epkg env register alpine
    # epkg() 将自动运行：eval "$(epkg env path)" 以在当前 shell 中更新 PATH
    jq --version
    ```
@@ -69,7 +78,7 @@ bash
 ## 验证安装
 
 - 列出环境：`epkg env list`
-- 列出环境中的包：`epkg -e myenv list`
+- 列出环境中的包：`epkg -e alpine list`
 - 显示环境 PATH：`epkg env path`
 
 ## 常见工作流
