@@ -180,19 +180,19 @@ fetch_show_latest_release() {
     }
 
     # Extract tag_name from JSON response
-    # Using a simple approach that works with common JSON parsers
+    # Using printf '%s' to avoid echo interpreting \r\n as control characters
     local tag_name
     if command -v jq >/dev/null 2>&1; then
-        tag_name=$(echo "$response" | jq -r '.tag_name // empty')
+        tag_name=$(printf '%s' "$response" | jq -r '.tag_name // empty')
     elif command -v python3 >/dev/null 2>&1; then
-        tag_name=$(echo "$response" | python3 -c "import sys, json; print(json.load(sys.stdin).get('tag_name', ''))" 2>/dev/null)
+        tag_name=$(printf '%s' "$response" | python3 -c "import sys, json; print(json.load(sys.stdin).get('tag_name', ''))" 2>/dev/null)
     elif command -v python >/dev/null 2>&1; then
-        tag_name=$(echo "$response" | python -c "import sys, json; print(json.load(sys.stdin).get('tag_name', ''))" 2>/dev/null)
+        tag_name=$(printf '%s' "$response" | python -c "import sys, json; print(json.load(sys.stdin).get('tag_name', ''))" 2>/dev/null)
     fi
 
     if [ -z "$tag_name" ] || [ "$tag_name" = "null" ] || [ "$tag_name" = "" ]; then
         # Fallback: use grep/sed to extract tag_name (less robust but works without dependencies)
-        tag_name=$(echo "$response" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+        tag_name=$(printf '%s' "$response" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
     fi
 
     if [ -z "$tag_name" ] || [ "$tag_name" = "null" ] || [ "$tag_name" = "" ]; then
