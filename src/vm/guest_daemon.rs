@@ -137,6 +137,9 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use crate::run::VM_SESSION_DONE_CMD;
 use super::client::StreamMessage;
+use std::sync::atomic::{AtomicUsize, AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
 
 /// Poll timeout in milliseconds for PTY/pipe and TCP wait.
 const POLL_TIMEOUT_MS: u32 = 100;
@@ -396,6 +399,28 @@ enum ConnectionDisposition {
     Shutdown,
     /// Keep listening for another command; poll interval before idle shutdown.
     ReuseWait { idle_timeout_ms: u32 },
+}
+
+/// Shared state for parallel connection handling.
+/// Tracks active connections and shutdown requests across threads.
+struct ParallelState {
+    /// Count of currently active connections (threads running handle_connection).
+    active_connections: AtomicUsize,
+    /// Shutdown requested (VM_SESSION_DONE_CMD or non-reuse connection finished).
+    shutdown_requested: AtomicBool,
+    /// Idle timeout for accept (ms). 0 means infinite wait.
+    /// Updated by threads that return ReuseWait disposition.
+    idle_timeout_ms: AtomicU32,
+}
+
+impl ParallelState {
+    fn new(initial_idle_timeout_ms: u32) -> Self {
+        Self {
+            active_connections: AtomicUsize::new(0),
+            shutdown_requested:  AtomicBool::new(false),
+            idle_timeout_ms:     AtomicU32::new(initial_idle_timeout_ms),
+        }
+    }
 }
 
 /// Synchronize guest clock with host time using clock_settime(CLOCK_REALTIME).
@@ -1794,7 +1819,6 @@ fn accept_vsock_with_timeout(raw_fd: RawFd, timeout_ms: u32) -> Result<Option<Ra
 
 #[cfg(target_os = "linux")]
 fn run_vsock_server() -> Result<()> {
-    use std::os::fd::FromRawFd;
     use std::io::Write;
 
     let kmsg_write = |msg: &str| {
@@ -1877,84 +1901,99 @@ fn run_vsock_server() -> Result<()> {
     drop(ready_fd);
 
     log::debug!("vm-daemon starting (vsock), listening on port {}", VSOCK_PORT);
-    kmsg_write("<6>run_vsock_server: entering accept loop\n");
+    kmsg_write("<6>run_vsock_server: entering accept loop (parallel mode)\n");
 
-    let mut next_idle_timeout_ms = VM_REUSE_IDLE_TIMEOUT_MS;
-    let mut first_accept = true;
+    // Shared state for parallel connection handling
+    // Use VM_REUSE_IDLE_TIMEOUT_MS as initial idle timeout
+    let state = Arc::new(ParallelState::new(VM_REUSE_IDLE_TIMEOUT_MS));
+    let mut thread_handles: Vec<JoinHandle<()>> = Vec::new();
+
+    /// Accept timeout when connections are active (short poll interval).
+    const ACTIVE_POLL_INTERVAL_MS: u32 = 100;
+
     loop {
-        let client_fd = if first_accept {
-            first_accept = false;
-            log::debug!("vm-daemon: calling accept()...");
-            kmsg_write("<6>run_vsock_server: about to call accept (blocking)\n");
-            log::debug!("vm-daemon: calling accept()...");
-            let fd = match socket::accept(raw_fd) {
-                Ok(fd) => {
-                    kmsg_write(&format!("<6>run_vsock_server: accept returned fd={}\n", fd));
-                    fd
-                }
-                Err(e) => {
-                    kmsg_write(&format!("<3>run_vsock_server: accept FAILED: {} (errno={})\n", e, e as i32));
-                    return Err(eyre!("vsock accept failed: {}", e));
-                }
-            };
-            fd
+        // Calculate accept timeout based on active connections
+        let accept_timeout_ms = if state.active_connections.load(Ordering::SeqCst) > 0 {
+            // Active connections: use short poll interval to check for new connections
+            // while periodically cleaning up finished threads
+            ACTIVE_POLL_INTERVAL_MS
+        } else if state.shutdown_requested.load(Ordering::SeqCst) {
+            // No active connections and shutdown requested: exit immediately
+            kmsg_write("<6>run_vsock_server: shutdown requested with no active connections, exiting\n");
+            log::debug!("vm-daemon: shutdown requested, no active connections, exiting");
+            break;
         } else {
-            kmsg_write(&format!("<6>run_vsock_server: waiting for next connection (reuse, {} ms)\n", next_idle_timeout_ms));
-            log::debug!(
-                "vm-daemon: waiting for next connection (reuse, {} ms)...",
-                next_idle_timeout_ms
-            );
-            match accept_vsock_with_timeout(raw_fd, next_idle_timeout_ms)? {
-                Some(fd) => fd,
-                None => {
-                    kmsg_write("<6>run_vsock_server: idle timeout, powering off guest\n");
+            // No active connections: use idle timeout from state (0 = infinite)
+            state.idle_timeout_ms.load(Ordering::SeqCst)
+        };
+
+        // Accept new connection with timeout
+        match accept_vsock_with_timeout(raw_fd, accept_timeout_ms)? {
+            Some(client_fd) => {
+                log::debug!("vm-daemon: accept() succeeded, fd={}", client_fd);
+                set_socket_buffer_size(client_fd);
+                kmsg_write(&format!("<6>run_vsock_server: accepted connection fd={}\n", client_fd));
+
+                // Increment active connection count
+                state.active_connections.fetch_add(1, Ordering::SeqCst);
+                let state_clone = Arc::clone(&state);
+
+                // Spawn thread to handle connection
+                let handle = thread::spawn(move || {
+                    let stream = unsafe { TcpStream::from_raw_fd(client_fd) };
+                    kmsg_write("<6>run_vsock_server thread: calling handle_connection\n");
+                    let result = handle_connection(stream);
+                    kmsg_write("<6>run_vsock_server thread: handle_connection returned\n");
+
+                    // Update state based on disposition
+                    match result {
+                        Ok(ConnectionDisposition::Shutdown) => {
+                            kmsg_write("<6>run_vsock_server thread: Shutdown disposition, setting shutdown_requested\n");
+                            state_clone.shutdown_requested.store(true, Ordering::SeqCst);
+                        }
+                        Ok(ConnectionDisposition::ReuseWait { idle_timeout_ms }) => {
+                            // Use minimum idle timeout: 0 (infinite) wins, otherwise smallest timeout
+                            state_clone.idle_timeout_ms.fetch_min(idle_timeout_ms, Ordering::SeqCst);
+                            log::debug!("thread: ReuseWait idle_timeout_ms={}, state now={}",
+                                idle_timeout_ms, state_clone.idle_timeout_ms.load(Ordering::SeqCst));
+                        }
+                        Err(e) => {
+                            kmsg_write(&format!("<3>run_vsock_server thread: error: {}\n", e));
+                            log::debug!("thread: handle_connection error: {}", e);
+                        }
+                    }
+
+                    // Decrement active connection count
+                    state_clone.active_connections.fetch_sub(1, Ordering::SeqCst);
+                    kmsg_write("<6>run_vsock_server thread: decremented active_connections\n");
+                });
+                thread_handles.push(handle);
+            }
+            None => {
+                // Timeout expired
+                let active = state.active_connections.load(Ordering::SeqCst);
+                if active == 0 && !state.shutdown_requested.load(Ordering::SeqCst) {
+                    // No active connections, idle timeout expired, no shutdown requested
+                    kmsg_write("<6>run_vsock_server: idle timeout with no connections, powering off\n");
                     log::debug!("vm-daemon: idle timeout, powering off guest");
                     break;
                 }
-            }
-        };
-
-        log::debug!("vm-daemon: accept() succeeded, fd={}", client_fd);
-        // Set socket buffer size on accepted connection for large data transfers
-        set_socket_buffer_size(client_fd);
-        kmsg_write("<6>run_vsock_server: creating TcpStream from fd\n");
-        let stream = unsafe { TcpStream::from_raw_fd(client_fd) };
-        log::debug!("vm-daemon vsock: accepted connection");
-
-        kmsg_write("<6>run_vsock_server: about to call handle_connection\n");
-        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            handle_connection(stream)
-        })) {
-            Ok(r) => {
-                kmsg_write("<6>run_vsock_server: handle_connection returned\n");
-                r
-            }
-            Err(_) => {
-                kmsg_write("<3>run_vsock_server: handle_connection PANICKED!\n");
-                Err(eyre!("handle_connection panicked"))
-            }
-        };
-        match result {
-            Ok(ConnectionDisposition::Shutdown) => {
-                kmsg_write("<6>run_vsock_server: handle_connection returned Shutdown, breaking loop\n");
-                log::debug!("vm-daemon: connection closed, powering off guest (vsock)");
-                break;
-            }
-            Ok(ConnectionDisposition::ReuseWait { idle_timeout_ms }) => {
-                next_idle_timeout_ms = idle_timeout_ms;
-                kmsg_write(&format!("<6>run_vsock_server: ReuseWait idle_timeout_ms={}, continuing loop\n", next_idle_timeout_ms));
-                log::debug!(
-                    "vm-daemon: reuse_vm — next idle window {} ms",
-                    next_idle_timeout_ms
-                );
-                continue;
-            }
-            Err(e) => {
-                let _ = kmsg_write(&format!("<3>run_vsock_server: handle_connection ERROR: {}\n", e));
-                log::debug!("Error handling vsock connection: {}", e);
-                return Err(e);
+                // Otherwise: continue loop (active connections or shutdown pending)
             }
         }
+
+        // Clean up finished threads periodically
+        thread_handles.retain(|h| !h.is_finished());
+    }
+
+    // Wait for remaining threads to finish
+    kmsg_write(&format!(
+        "<6>run_vsock_server: waiting for {} remaining threads\n",
+        thread_handles.len()
+    ));
+    log::debug!("vm-daemon: waiting for {} remaining threads", thread_handles.len());
+    for handle in thread_handles {
+        let _ = handle.join();
     }
 
     let _ = kmsg_write("<6>run_vsock_server: loop exited normally\n");
@@ -1969,7 +2008,6 @@ fn run_vsock_server_with_existing_listener(
     listener_fd: std::os::fd::OwnedFd,
     idle_timeout_ms: u32,
 ) -> Result<()> {
-    use std::os::fd::FromRawFd;
     use std::io::Write;
 
     let kmsg_write = |msg: &str| {
@@ -1978,87 +2016,101 @@ fn run_vsock_server_with_existing_listener(
         }
     };
 
-    kmsg_write("<6>run_vsock_server_with_existing_listener: start (using pre-created listener)\n");
+    kmsg_write("<6>run_vsock_server_with_existing_listener: start (using pre-created listener, parallel mode)\n");
     log_process_identity("vm-daemon run_vsock_server_with_existing_listener start");
     log::info!("vm-daemon: using pre-created listener for forward mode (race-free reuse)");
 
     let raw_fd = listener_fd.as_raw_fd();
 
     log::debug!("vm-daemon starting (vsock with existing listener), accepting on port 10000");
-    kmsg_write("<6>run_vsock_server_with_existing_listener: entering accept loop\n");
+    kmsg_write("<6>run_vsock_server_with_existing_listener: entering accept loop (parallel mode)\n");
 
-    let mut next_idle_timeout_ms = idle_timeout_ms;
-    let mut first_accept = true;
+    // Shared state for parallel connection handling
+    let state = Arc::new(ParallelState::new(idle_timeout_ms));
+    let mut thread_handles: Vec<JoinHandle<()>> = Vec::new();
+
+    /// Accept timeout when connections are active (short poll interval).
+    const ACTIVE_POLL_INTERVAL_MS: u32 = 100;
+
     loop {
-        let client_fd = if first_accept {
-            first_accept = false;
-            log::debug!("vm-daemon: calling accept() on pre-created listener...");
-            kmsg_write("<6>run_vsock_server_with_existing_listener: about to call accept (blocking)\n");
-            let fd = match socket::accept(raw_fd) {
-                Ok(fd) => {
-                    kmsg_write(&format!("<6>run_vsock_server_with_existing_listener: accept returned fd={}\n", fd));
-                    fd
-                }
-                Err(e) => {
-                    kmsg_write(&format!("<3>run_vsock_server_with_existing_listener: accept FAILED: {} (errno={})\n", e, e as i32));
-                    return Err(eyre!("vsock accept failed: {}", e));
-                }
-            };
-            fd
+        // Calculate accept timeout based on active connections
+        let accept_timeout_ms = if state.active_connections.load(Ordering::SeqCst) > 0 {
+            // Active connections: use short poll interval
+            ACTIVE_POLL_INTERVAL_MS
+        } else if state.shutdown_requested.load(Ordering::SeqCst) {
+            // No active connections and shutdown requested: exit immediately
+            kmsg_write("<6>run_vsock_server_with_existing_listener: shutdown requested, exiting\n");
+            log::debug!("vm-daemon: shutdown requested, no active connections, exiting");
+            break;
         } else {
-            kmsg_write(&format!("<6>run_vsock_server: waiting for next connection (reuse, {} ms)\n", next_idle_timeout_ms));
-            log::debug!(
-                "vm-daemon: waiting for next connection (reuse, {} ms)...",
-                next_idle_timeout_ms
-            );
-            match accept_vsock_with_timeout(raw_fd, next_idle_timeout_ms)? {
-                Some(fd) => fd,
-                None => {
-                    kmsg_write("<6>run_vsock_server: idle timeout, powering off guest\n");
+            // No active connections: use idle timeout from state (0 = infinite)
+            state.idle_timeout_ms.load(Ordering::SeqCst)
+        };
+
+        // Accept new connection with timeout
+        match accept_vsock_with_timeout(raw_fd, accept_timeout_ms)? {
+            Some(client_fd) => {
+                log::debug!("vm-daemon: accept() succeeded, fd={}", client_fd);
+                kmsg_write(&format!("<6>run_vsock_server_with_existing_listener: accepted connection fd={}\n", client_fd));
+
+                // Increment active connection count
+                state.active_connections.fetch_add(1, Ordering::SeqCst);
+                let state_clone = Arc::clone(&state);
+
+                // Spawn thread to handle connection
+                let handle = thread::spawn(move || {
+                    let stream = unsafe { TcpStream::from_raw_fd(client_fd) };
+                    kmsg_write("<6>run_vsock_server_with_existing_listener thread: calling handle_connection\n");
+                    let result = handle_connection(stream);
+                    kmsg_write("<6>run_vsock_server_with_existing_listener thread: handle_connection returned\n");
+
+                    // Update state based on disposition
+                    match result {
+                        Ok(ConnectionDisposition::Shutdown) => {
+                            kmsg_write("<6>run_vsock_server_with_existing_listener thread: Shutdown, setting shutdown_requested\n");
+                            state_clone.shutdown_requested.store(true, Ordering::SeqCst);
+                        }
+                        Ok(ConnectionDisposition::ReuseWait { idle_timeout_ms }) => {
+                            // Use minimum idle timeout: 0 (infinite) wins, otherwise smallest timeout
+                            state_clone.idle_timeout_ms.fetch_min(idle_timeout_ms, Ordering::SeqCst);
+                            log::debug!("thread: ReuseWait idle_timeout_ms={}, state now={}",
+                                idle_timeout_ms, state_clone.idle_timeout_ms.load(Ordering::SeqCst));
+                        }
+                        Err(e) => {
+                            kmsg_write(&format!("<3>run_vsock_server_with_existing_listener thread: error: {}\n", e));
+                            log::debug!("thread: handle_connection error: {}", e);
+                        }
+                    }
+
+                    // Decrement active connection count
+                    state_clone.active_connections.fetch_sub(1, Ordering::SeqCst);
+                });
+                thread_handles.push(handle);
+            }
+            None => {
+                // Timeout expired
+                let active = state.active_connections.load(Ordering::SeqCst);
+                if active == 0 && !state.shutdown_requested.load(Ordering::SeqCst) {
+                    // No active connections, idle timeout expired
+                    kmsg_write("<6>run_vsock_server_with_existing_listener: idle timeout, powering off\n");
                     log::debug!("vm-daemon: idle timeout, powering off guest");
                     break;
                 }
             }
-        };
-
-        log::debug!("vm-daemon: accept() succeeded, fd={}", client_fd);
-        kmsg_write("<6>run_vsock_server_with_existing_listener: creating TcpStream from fd\n");
-        let stream = unsafe { TcpStream::from_raw_fd(client_fd) };
-        log::debug!("vm-daemon vsock: accepted connection");
-
-        kmsg_write("<6>run_vsock_server_with_existing_listener: about to call handle_connection\n");
-        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            handle_connection(stream)
-        })) {
-            Ok(r) => {
-                kmsg_write("<6>run_vsock_server_with_existing_listener: handle_connection returned\n");
-                r
-            }
-            Err(_) => {
-                kmsg_write("<3>run_vsock_server_with_existing_listener: handle_connection PANICKED!\n");
-                Err(eyre!("handle_connection panicked"))
-            }
-        };
-        match result {
-            Ok(ConnectionDisposition::Shutdown) => {
-                kmsg_write("<6>run_vsock_server_with_existing_listener: handle_connection returned Shutdown, breaking loop\n");
-                log::debug!("vm-daemon: connection closed, powering off guest (vsock)");
-                break;
-            }
-            Ok(ConnectionDisposition::ReuseWait { idle_timeout_ms }) => {
-                next_idle_timeout_ms = idle_timeout_ms;
-                log::debug!(
-                    "vm-daemon: reuse_vm — next idle window {} ms",
-                    next_idle_timeout_ms
-                );
-                continue;
-            }
-            Err(e) => {
-                let _ = kmsg_write(&format!("<3>run_vsock_server_with_existing_listener: handle_connection ERROR: {}\n", e));
-                log::debug!("Error handling vsock connection: {}", e);
-                return Err(e);
-            }
         }
+
+        // Clean up finished threads periodically
+        thread_handles.retain(|h| !h.is_finished());
+    }
+
+    // Wait for remaining threads to finish
+    kmsg_write(&format!(
+        "<6>run_vsock_server_with_existing_listener: waiting for {} remaining threads\n",
+        thread_handles.len()
+    ));
+    log::debug!("vm-daemon: waiting for {} remaining threads", thread_handles.len());
+    for handle in thread_handles {
+        let _ = handle.join();
     }
 
     let _ = kmsg_write("<6>run_vsock_server_with_existing_listener: loop exited normally\n");
