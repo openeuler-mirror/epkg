@@ -736,6 +736,13 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
     let mut prepared_opts = run_options.clone();
     prepare_run_options_for_command(env_root, &mut prepared_opts);
 
+    // Add EPKG_CACHE to env_vars so guest's epkg can find host's cache directory
+    // (Linux epkg expects ~/.cache/epkg, but host uses ~/Library/Caches/epkg on macOS)
+    if !prepared_opts.env_vars.contains_key("EPKG_CACHE") {
+        let dirs = crate::models::dirs();
+        prepared_opts.env_vars.insert("EPKG_CACHE".to_string(), dirs.home_cache.to_string_lossy().to_string());
+    }
+
     let isolate_mode = prepared_opts.effective_sandbox.isolate_mode
         .unwrap_or(IsolateMode::Env);
 
