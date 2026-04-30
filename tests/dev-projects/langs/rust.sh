@@ -27,20 +27,20 @@ else
     SHELL_CMD="/bin/sh -c"
 fi
 
-run $SHELL_CMD 'mkdir -p /tmp/rustproj/src && cd /tmp/rustproj && printf "%s\n" "[package]" "name=\"rustproj\"" "version=\"0.1.0\"" "[profile.release]" "opt-level=0" > Cargo.toml'
-run $SHELL_CMD 'cd /tmp/rustproj && cat > src/main.rs << EOF
-fn main() { println!("ok"); }
-EOF'
-run $SHELL_CMD 'cd /tmp/rustproj && cargo build && cargo run' | grep -q ok
-run $SHELL_CMD 'cd /tmp/rustproj && cargo add rand && cat > src/main.rs << EOF
-fn main() { println!("{}", rand::random::<u32>());
+run $SHELL_CMD "mkdir -p $TEST_TMP/rustproj/src && cd $TEST_TMP/rustproj && printf '%s\n' '[package]' 'name=\"rustproj\"' 'version=\"0.1.0\"' '[profile.release]' 'opt-level=0' > Cargo.toml"
+run $SHELL_CMD "cd $TEST_TMP/rustproj && cat > src/main.rs << EOF
+fn main() { println!(\"ok\"); }
+EOF"
+run $SHELL_CMD "cd $TEST_TMP/rustproj && cargo build && cargo run" | grep -q ok
+run $SHELL_CMD "cd $TEST_TMP/rustproj && cargo add rand && cat > src/main.rs << EOF
+fn main() { println!(\"{}\", rand::random::<u32>());
 }
-EOF'
-run $SHELL_CMD 'cd /tmp/rustproj && cargo run' | grep -q .
+EOF"
+run $SHELL_CMD "cd $TEST_TMP/rustproj && cargo run" | grep -q .
 # Exercise ebin for cargo (build in rustproj)
 # Use epkg run instead of direct ebin execution to ensure namespace isolation
 # for resolving linker (cc/gcc) paths during build script compilation
 if [ -n "${ENV_ROOT:-}" ] && [ -x "$ENV_ROOT/ebin/cargo" ]; then
-    run $SHELL_CMD 'cd /tmp/rustproj && cargo build'
+    run $SHELL_CMD "cd $TEST_TMP/rustproj && cargo build"
 fi
 lang_ok

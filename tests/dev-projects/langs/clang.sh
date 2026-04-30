@@ -25,6 +25,6 @@ else
     SHELL_CMD="/bin/sh -c"
 fi
 
-run $SHELL_CMD "mkdir -p /tmp/clangproj && cd /tmp/clangproj && printf '%s\n' '#include <stdio.h>' 'int main(void) { puts(\"ok\"); return 0; }' > main.c"
-run $SHELL_CMD "cd /tmp/clangproj && $CLANG_CMD -o hello main.c && ./hello" | grep -q ok
+run $SHELL_CMD "mkdir -p $TEST_TMP/clangproj && cd $TEST_TMP/clangproj && printf '%s\n' '#include <stdio.h>' 'int main(void) { puts(\"ok\"); return 0; }' > main.c"
+run $SHELL_CMD "cd $TEST_TMP/clangproj && $CLANG_CMD -o hello main.c && ./hello" | grep -q ok
 lang_ok

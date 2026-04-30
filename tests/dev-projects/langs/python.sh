@@ -35,12 +35,12 @@ fi
 
 # Create test project directory and file
 if [ -n "$SHELL_CMD" ]; then
-    run $SHELL_CMD 'mkdir -p /tmp/pyproj && cd /tmp/pyproj && echo "print(\"hello\")" > main.py'
-    run $SHELL_CMD "cd /tmp/pyproj && $PYTHON_CMD main.py" | grep -q hello
+    run $SHELL_CMD "mkdir -p $TEST_TMP/pyproj && cd $TEST_TMP/pyproj && echo 'print(\"hello\")' > main.py"
+    run $SHELL_CMD "cd $TEST_TMP/pyproj && $PYTHON_CMD main.py" | grep -q hello
 else
     # Windows conda/msys2: use python to create the test file
-    run $PYTHON_CMD -c "import os; os.makedirs('/tmp/pyproj', exist_ok=True); open('/tmp/pyproj/main.py', 'w').write('print(\"hello\")')"
-    run $PYTHON_CMD /tmp/pyproj/main.py | grep -q hello
+    run $PYTHON_CMD -c "import os; os.makedirs('$TEST_TMP/pyproj', exist_ok=True); open('$TEST_TMP/pyproj/main.py', 'w').write('print(\"hello\")')"
+    run $PYTHON_CMD "$TEST_TMP/pyproj/main.py" | grep -q hello
 fi
 
 # Use python -m pip so we don't rely on pip3 in PATH.

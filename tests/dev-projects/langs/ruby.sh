@@ -32,14 +32,14 @@ run ruby -e "puts \"ok\""
 # Create test file - use ruby for conda/msys2 (no /bin/sh)
 # brew: use bash instead of /bin/sh (vdso_time SIGSEGV)
 if [ "$OS" = "conda" ] || [ "$OS" = "msys2" ]; then
-    run ruby -e "Dir.mkdir('/tmp/rubyproj') rescue nil; File.write('/tmp/rubyproj/main.rb', 'puts \"hello\"')"
-    run ruby /tmp/rubyproj/main.rb | grep -q hello
+    run ruby -e "Dir.mkdir('$TEST_TMP/rubyproj') rescue nil; File.write('$TEST_TMP/rubyproj/main.rb', 'puts \"hello\"')"
+    run ruby "$TEST_TMP/rubyproj/main.rb" | grep -q hello
 elif [ "$OS" = "brew" ]; then
-    run bash -c 'mkdir -p /tmp/rubyproj && cd /tmp/rubyproj && echo "puts \"hello\"" > main.rb'
-    run bash -c 'cd /tmp/rubyproj && ruby main.rb' | grep -qx hello
+    run bash -c "mkdir -p $TEST_TMP/rubyproj && cd $TEST_TMP/rubyproj && echo 'puts \"hello\"' > main.rb"
+    run bash -c "cd $TEST_TMP/rubyproj && ruby main.rb" | grep -qx hello
 else
-    run /bin/sh -c 'mkdir -p /tmp/rubyproj && cd /tmp/rubyproj && echo "puts \"hello\"" > main.rb'
-    run /bin/sh -c 'cd /tmp/rubyproj && ruby main.rb' | grep -qx hello
+    run /bin/sh -c "mkdir -p $TEST_TMP/rubyproj && cd $TEST_TMP/rubyproj && echo 'puts \"hello\"' > main.rb"
+    run /bin/sh -c "cd $TEST_TMP/rubyproj && ruby main.rb" | grep -qx hello
 fi
 
 # Skip gem tests on conda/Windows (no native compilation toolchain)
@@ -58,8 +58,8 @@ fi
 # Set GEM_HOME and GEM_PATH to writable locations inside the environment
 # Also set XDG_CACHE_HOME to avoid permission issues with ~/.cache
 if run which gem; then
-    run $SHELL_CMD 'export GEM_HOME=/tmp/gem GEM_PATH=/tmp/gem XDG_CACHE_HOME=/tmp/xdg-cache && gem install json'
-    run $SHELL_CMD 'export GEM_HOME=/tmp/gem GEM_PATH=/tmp/gem && ruby -e "require \"json\"; puts JSON.parse(\"{\\\"x\\\":1}\")[\"x\"]"' | grep -qx 1
+    run $SHELL_CMD "export GEM_HOME=$TEST_TMP/gem GEM_PATH=$TEST_TMP/gem XDG_CACHE_HOME=$TEST_TMP/xdg-cache && gem install json"
+    run $SHELL_CMD "export GEM_HOME=$TEST_TMP/gem GEM_PATH=$TEST_TMP/gem && ruby -e 'require \"json\"; puts JSON.parse(\"{\\\"x\\\":1}\")[\"x\"]'" | grep -qx 1
 fi
 run_ebin_if gem --version
 
@@ -69,6 +69,6 @@ run_ebin_if gem --version
 # - The UID mapping only affects child processes, so elf-loader execve's with UID=65534
 # - This causes make subprocesses to fail with "Invalid argument" when exec'ing /bin/sh
 # - In contrast, 'epkg run' forks first, then unshare in child, so child has UID=0
-GEM_HOME=/tmp/gem GEM_PATH=/tmp/gem XDG_CACHE_HOME=/tmp/xdg-cache run gem install json
+GEM_HOME="$TEST_TMP/gem" GEM_PATH="$TEST_TMP/gem" XDG_CACHE_HOME="$TEST_TMP/xdg-cache" run gem install json
 
 lang_ok

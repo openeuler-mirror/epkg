@@ -62,6 +62,15 @@ _check_log_and_fail() {
 # Per-run log file counter (fresh per lang script process)
 RUN_COUNT=${RUN_COUNT:-0}
 
+# Create and mount a dedicated temp directory for VM guest.
+# On macOS/Windows, /tmp in VM guest is ephemeral (tmpfs), so we mount
+# a host temp dir to preserve files across multiple epkg run invocations.
+# The mount is added automatically when running tests via libkrun VM.
+# Tests should use $TEST_TMP instead of /tmp for persistent storage.
+TEST_TMP="/tmp/epkg-test-${LANG_NAME:-?}"
+mkdir -p "$TEST_TMP" 2>/dev/null || TEST_TMP="/tmp"
+export TEST_TMP
+
 # Shared: log to file, check for Error/Warning/WARN, cat log, return exit code. Used by run() and run_install().
 _run_logged() {
     tag=$1
@@ -85,8 +94,9 @@ _run_logged() {
 }
 
 # "run --" so options like ruby -e / node -e are not parsed as epkg run options.
+# Add --mount for VM guest to access persistent temp directory.
 run() {
-    _run_logged "run" "epkg -e $ENV_NAME run -- $*" run -- "$@"
+    _run_logged "run" "epkg -e $ENV_NAME run --mount $TEST_TMP -- $*" run --mount "$TEST_TMP" -- "$@"
 }
 
 run_install() {

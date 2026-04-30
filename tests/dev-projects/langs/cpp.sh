@@ -16,6 +16,6 @@ else
     SHELL_CMD="/bin/sh -c"
 fi
 
-run $SHELL_CMD 'mkdir -p /tmp/cppproj && cd /tmp/cppproj && printf "%s\n" "#include <iostream>" "int main() { std::cout << \"ok\" << std::endl; return 0; }" > main.cc'
-run $SHELL_CMD 'cd /tmp/cppproj && g++ -o hello main.cc && ./hello' | grep -q ok
+run $SHELL_CMD "mkdir -p $TEST_TMP/cppproj && cd $TEST_TMP/cppproj && printf '%s\n' '#include <iostream>' 'int main() { std::cout << \"ok\" << std::endl; return 0; }' > main.cc"
+run $SHELL_CMD "cd $TEST_TMP/cppproj && g++ -o hello main.cc && ./hello" | grep -q ok
 lang_ok

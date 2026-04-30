@@ -21,10 +21,10 @@ run $LUA_CMD -e "print(1+1)"
 
 # Create test file - use lua for conda/msys2 (no /bin/sh)
 if [ "$OS" = "conda" ] || [ "$OS" = "msys2" ]; then
-    run $LUA_CMD -e "os.execute('mkdir -p /tmp/luaproj'); f = io.open('/tmp/luaproj/main.lua', 'w'); f:write('print(\"ok\")'); f:close()"
-    run $LUA_CMD /tmp/luaproj/main.lua | grep -q ok
+    run $LUA_CMD -e "os.execute('mkdir -p $TEST_TMP/luaproj'); f = io.open('$TEST_TMP/luaproj/main.lua', 'w'); f:write('print(\"ok\")'); f:close()"
+    run $LUA_CMD "$TEST_TMP/luaproj/main.lua" | grep -q ok
 else
-    run /bin/sh -c 'mkdir -p /tmp/luaproj && cd /tmp/luaproj && echo "print(\"ok\")" > main.lua'
-    run /bin/sh -c 'cd /tmp/luaproj && (lua main.lua || lua5.4 main.lua)' | grep -q ok
+    run /bin/sh -c "mkdir -p $TEST_TMP/luaproj && cd $TEST_TMP/luaproj && echo 'print(\"ok\")' > main.lua"
+    run /bin/sh -c "cd $TEST_TMP/luaproj && ($LUA_CMD main.lua || lua5.4 main.lua)" | grep -q ok
 fi
 lang_ok

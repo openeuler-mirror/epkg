@@ -20,23 +20,23 @@ run_ebin_if java -version
 
 # Create test file - use java for conda/msys2 (no /bin/sh)
 if [ "$OS" = "conda" ] || [ "$OS" = "msys2" ]; then
-    run java -e '
+    run java -e "
         import java.io.*;
         public class init {
             public static void main(String[] args) throws Exception {
-                new File("/tmp/javaproj").mkdirs();
-                try (PrintWriter w = new PrintWriter("/tmp/javaproj/Main.java")) {
-                    w.println("public class Main { public static void main(String[] args) { System.out.println(\"ok\"); } }");
+                new File(\"$TEST_TMP/javaproj\").mkdirs();
+                try (PrintWriter w = new PrintWriter(\"$TEST_TMP/javaproj/Main.java\")) {
+                    w.println(\"public class Main { public static void main(String[] args) { System.out.println(\"ok\"); } }\");
                 }
             }
         }
-    ' 2>/dev/null || run java -e 'new java.io.File("/tmp/javaproj").mkdirs(); try (var w = new java.io.PrintWriter("/tmp/javaproj/Main.java")) { w.println("public class Main { public static void main(String[] args) { System.out.println(\"ok\"); } }"); }'
-    run javac /tmp/javaproj/Main.java
-    run java -cp /tmp/javaproj Main | grep -q ok
+    " 2>/dev/null || run java -e "new java.io.File(\"$TEST_TMP/javaproj\").mkdirs(); try (var w = new java.io.PrintWriter(\"$TEST_TMP/javaproj/Main.java\")) { w.println(\"public class Main { public static void main(String[] args) { System.out.println(\"ok\"); } }\"); }"
+    run javac "$TEST_TMP/javaproj/Main.java"
+    run java -cp "$TEST_TMP/javaproj" Main | grep -q ok
     lang_ok
     exit 0
 fi
 
-run /bin/sh -c 'mkdir -p /tmp/javaproj && cd /tmp/javaproj && printf "%s\n" "public class Main { public static void main(String[] args) { System.out.println(\"ok\"); } }" > Main.java'
-run /bin/sh -c 'cd /tmp/javaproj && javac Main.java && java Main' | grep -q ok
+run /bin/sh -c "mkdir -p $TEST_TMP/javaproj && cd $TEST_TMP/javaproj && printf '%s\n' 'public class Main { public static void main(String[] args) { System.out.println(\"ok\"); } }' > Main.java"
+run /bin/sh -c "cd $TEST_TMP/javaproj && javac Main.java && java Main" | grep -q ok
 lang_ok

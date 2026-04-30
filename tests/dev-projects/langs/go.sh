@@ -25,15 +25,15 @@ import (
     "os"
 )
 func main() {
-    os.MkdirAll("/tmp/goproj", 0755)
-    f, _ := os.Create("/tmp/goproj/main.go")
+    os.MkdirAll("$TEST_TMP/goproj", 0755)
+    f, _ := os.Create("$TEST_TMP/goproj/main.go")
     f.WriteString("package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"ok\") }\n")
     f.Close()
     fmt.Println("created")
 }
 EOF
-    run go build -o /tmp/goproj/hello /tmp/goproj/main.go
-    run /tmp/goproj/hello | grep -q ok
+    run go build -o "$TEST_TMP/goproj/hello" "$TEST_TMP/goproj/main.go"
+    run "$TEST_TMP/goproj/hello" | grep -q ok
     lang_ok
     exit 0
 elif [ "$OS" = "brew" ]; then
@@ -42,8 +42,8 @@ else
     SHELL_CMD="/bin/sh -c"
 fi
 
-run $SHELL_CMD 'mkdir -p /tmp/goproj && cd /tmp/goproj && printf "%s\n" "package main" "import \"fmt\"" "func main() { fmt.Println(\"ok\") }" > main.go'
-run $SHELL_CMD 'export GOCACHE=/tmp/go-build && cd /tmp/goproj && go build -o hello main.go && ./hello'
-# Run go get and go run in same shell to preserve /tmp/gogetproj between operations
-run $SHELL_CMD 'export GOCACHE=/tmp/go-build && cd /tmp && rm -rf gogetproj && mkdir -p gogetproj && cd gogetproj && go mod init test && go get rsc.io/quote && printf "%s\n" "package main" "import (" "\"fmt\"" "\"rsc.io/quote\"" ")" "func main() { fmt.Println(quote.Hello()) }" > main.go && go run main.go'
+run $SHELL_CMD "mkdir -p $TEST_TMP/goproj && cd $TEST_TMP/goproj && printf '%s\n' 'package main' 'import \"fmt\"' 'func main() { fmt.Println(\"ok\") }' > main.go"
+run $SHELL_CMD "export GOCACHE=$TEST_TMP/go-build && cd $TEST_TMP/goproj && go build -o hello main.go && ./hello"
+# Run go get and go run in same shell to preserve $TEST_TMP/gogetproj between operations
+run $SHELL_CMD "export GOCACHE=$TEST_TMP/go-build && cd $TEST_TMP && rm -rf gogetproj && mkdir -p gogetproj && cd gogetproj && go mod init test && go get rsc.io/quote && printf '%s\n' 'package main' 'import (' '\"fmt\"' '\"rsc.io/quote\"' ')' 'func main() { fmt.Println(quote.Hello()) }' > main.go && go run main.go"
 lang_ok

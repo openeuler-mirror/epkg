@@ -18,10 +18,10 @@ else
     SHELL_CMD="/bin/sh -c"
 fi
 
-run $SHELL_CMD 'cd /tmp/crystalproj && echo "puts \"ok\"" > main.cr'
+run $SHELL_CMD "mkdir -p $TEST_TMP/crystalproj && cd $TEST_TMP/crystalproj && echo 'puts \"ok\"' > main.cr"
 
 # Test 1: Dynamic linking (default)
-run $SHELL_CMD 'cd /tmp/crystalproj && rm -f main && crystal build main.cr && ./main'
+run $SHELL_CMD "cd $TEST_TMP/crystalproj && rm -f main && crystal build main.cr && ./main"
 
 # Test 2: Static linking (--static)
 # Use --static for fully static binary that doesn't need dynamic linker.
@@ -33,6 +33,6 @@ run $SHELL_CMD 'cd /tmp/crystalproj && rm -f main && crystal build main.cr && ./
 if [ "$OS" = "archlinux" ]; then
     log "Skipping static linking test on archlinux (no static gc library)"
 else
-    run $SHELL_CMD 'cd /tmp/crystalproj && rm -f main && crystal build main.cr --static && ./main'
+    run $SHELL_CMD "cd $TEST_TMP/crystalproj && rm -f main && crystal build main.cr --static && ./main"
 fi
 lang_ok
