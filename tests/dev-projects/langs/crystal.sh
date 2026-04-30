@@ -3,7 +3,7 @@
 
 . "$(dirname "$0")/../common.sh"
 
-run_install crystal gcc
+run_install crystal gc-static gcc
 check_cmd crystal --version || lang_skip "no crystal for OS=$OS"
 
 run_ebin crystal --version
