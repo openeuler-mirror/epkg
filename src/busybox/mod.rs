@@ -73,7 +73,15 @@ pub fn get_gid_name(gid: u32) -> String {
 /// Used to refuse starting nested VMs and skip host-specific operations.
 #[cfg(target_os = "linux")]
 pub fn is_inside_vm() -> bool {
-    // 1. Check DMI product name for common VM identifiers
+    // 1. Check kernel version for libkrun sandbox kernel
+    // libkrun uses a custom kernel with "-sandbox" in version string
+    if let Ok(version) = std::fs::read_to_string("/proc/version") {
+        if version.contains("-sandbox") {
+            return true;
+        }
+    }
+
+    // 2. Check DMI product name for common VM identifiers
     // /sys/class/dmi/id/product_name contains vendor/product info
     if let Ok(product) = std::fs::read_to_string("/sys/class/dmi/id/product_name") {
         let product = product.trim();

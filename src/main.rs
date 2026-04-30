@@ -2555,8 +2555,10 @@ fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
                subcommand_name, env_name);
 
     // Build command to send to VM
+    // Use guest's Linux epkg binary path instead of host's current_exe()
+    // Host's epkg is macOS binary, which doesn't work in Linux VM
     let mut cmd_parts = vec![
-        std::env::current_exe()?.to_string_lossy().to_string(),
+        "/usr/bin/epkg".to_string(),  // Guest's Linux epkg binary
         "-e".to_string(),
         config().common.env_name.clone(),
         subcommand_name.to_string(),
@@ -2577,9 +2579,16 @@ fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
     {
         let env_root = crate::dirs::get_env_root(config().common.env_name.clone())?;
         // Build environment variables to pass
-        let env_vars: HashMap<String, String> = std::env::vars()
+        // Include EPKG_CACHE so guest's epkg can find host's cache directory
+        // (Linux epkg expects ~/.cache/epkg, but host uses ~/Library/Caches/epkg on macOS)
+        let mut env_vars: HashMap<String, String> = std::env::vars()
             .filter(|(k, _)| k.starts_with("EPKG_") || k.starts_with("RUST_LOG") || k == "HOME")
             .collect();
+        // Set EPKG_CACHE to host's cache path if not already set
+        if !env_vars.contains_key("EPKG_CACHE") {
+            let dirs = crate::models::dirs();
+            env_vars.insert("EPKG_CACHE".to_string(), dirs.home_cache.to_string_lossy().to_string());
+        }
 
         crate::libkrun::execute_via_existing_vm(
             &env_root,
