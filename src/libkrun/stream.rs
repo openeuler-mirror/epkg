@@ -399,10 +399,14 @@ struct TerminalGuard {
 impl TerminalGuard {
     fn new() -> Self {
         let original_mode = nix::sys::termios::tcgetattr(std::io::stdin()).ok();
+        log::debug!("TerminalGuard::new: original_mode={:?}, is_some={}",
+            original_mode.is_some(), original_mode.is_some());
         if let Some(ref orig) = original_mode {
             let mut raw = orig.clone();
             nix::sys::termios::cfmakeraw(&mut raw);
-            let _ = nix::sys::termios::tcsetattr(std::io::stdin(), nix::sys::termios::SetArg::TCSANOW, &raw);
+            log::debug!("TerminalGuard::new: setting raw mode with TCSAFLUSH");
+            // Use TCSAFLUSH to discard any pending input before setting raw mode
+            let _ = nix::sys::termios::tcsetattr(std::io::stdin(), nix::sys::termios::SetArg::TCSAFLUSH, &raw);
         }
         Self { original_mode }
     }
@@ -411,8 +415,13 @@ impl TerminalGuard {
 #[cfg(unix)]
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        log::debug!("TerminalGuard::drop: restoring terminal, original_mode.is_some={}", self.original_mode.is_some());
         if let Some(ref orig) = self.original_mode {
-            let _ = nix::sys::termios::tcsetattr(std::io::stdin(), nix::sys::termios::SetArg::TCSANOW, orig);
+            // Use TCSADRAIN to wait for all output to be transmitted before restoring.
+            // This prevents terminal settings from being restored while output is still
+            // being written, which could cause terminal corruption.
+            let _ = nix::sys::termios::tcsetattr(std::io::stdin(), nix::sys::termios::SetArg::TCSADRAIN, orig);
+            log::debug!("TerminalGuard::drop: terminal restored");
         }
     }
 }
