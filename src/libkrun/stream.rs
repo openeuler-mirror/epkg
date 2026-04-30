@@ -908,9 +908,16 @@ pub fn send_command_over_stream(
     use std::os::unix::io::AsRawFd;
 
     crate::debug_epkg!("libkrun_stream: send_command_over_stream starting");
-    let (_use_pty, is_batch) = resolve_io_mode(io_mode);
-    crate::debug_epkg!("libkrun_stream: io_mode={:?}, is_batch={}, reuse_vm={}",
-        io_mode, is_batch, reuse_vm);
+    let (use_pty, is_batch) = resolve_io_mode(io_mode);
+    crate::debug_epkg!("libkrun_stream: io_mode={:?}, use_pty={}, reuse_vm={}",
+        io_mode, use_pty, reuse_vm);
+
+    // Create TerminalGuard for PTY mode to restore terminal on exit
+    let mut term_guard = if use_pty {
+        Some(TerminalGuard::new())
+    } else {
+        None
+    };
 
     // Build and send command request
     let request = build_command_request(cmd_parts, io_mode, reuse_vm, vm_keep_timeout_secs, extend_timeout_secs, env_vars, cwd, stdin);
@@ -1046,6 +1053,14 @@ pub fn send_command_over_stream(
     // Restore original flags
     if original_flags >= 0 {
         unsafe { libc::fcntl(stream_fd, libc::F_SETFL, original_flags); }
+    }
+
+    // CRITICAL: Restore terminal IMMEDIATELY before returning
+    // The shell prints its prompt on SIGCHLD which fires when child exits.
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    if let Some(ref mut guard) = term_guard {
+        guard.restore();
     }
 
     // If we didn't receive an exit message, the connection was closed prematurely
