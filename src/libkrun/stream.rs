@@ -396,7 +396,7 @@ pub fn send_command_via_vsock(
 
 /// RAII guard to restore terminal settings on drop.
 /// Can also be manually restored via restore() method.
-/// On macOS, also registers atexit handler because std::process::exit() skips Drop.
+/// On macOS, also registers atexit handler as backup (though _exit bypasses atexit).
 #[cfg(unix)]
 struct TerminalGuard {
     original_mode: Option<libc::termios>,
@@ -406,16 +406,15 @@ struct TerminalGuard {
 #[cfg(unix)]
 static TERMINAL_STATE: std::sync::Mutex<Option<libc::termios>> = std::sync::Mutex::new(None);
 
+/// Atexit handler to restore terminal on process exit.
+/// Note: libc::_exit() bypasses atexit, so this is only a backup.
+/// Primary restoration happens in reader thread on Exit message.
 #[cfg(unix)]
 extern "C" fn restore_terminal_atexit() {
     let guard = TERMINAL_STATE.lock().unwrap();
     if let Some(orig) = guard.as_ref() {
-        // Use fd 0 (stdin) directly - no need for stdin.lock() in atexit
-        // At process exit, all threads except the caller are already terminated
-        let fd = 0;
-        // Use TCSANOW for immediate restoration
-        let _ = unsafe { libc::tcsetattr(fd, libc::TCSANOW, orig) };
-        log::debug!("TerminalGuard::atexit: terminal restored via atexit handler");
+        // Use fd 0 (stdin) directly
+        let _ = unsafe { libc::tcsetattr(0, libc::TCSANOW, orig) };
     }
 }
 
@@ -453,18 +452,17 @@ impl TerminalGuard {
             None
         };
 
-        // Store in global for atexit handler
+        // Store in global for atexit handler and reader thread restoration
         {
             let mut guard = TERMINAL_STATE.lock().unwrap();
             *guard = original_mode.clone();
         }
 
-        // Register atexit handler (only once globally)
+        // Register atexit handler (only once globally, as backup)
         if original_mode.is_some() &&
            ATEXIT_REGISTERED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-            // Note: libc::atexit returns 0 on success
             let result = unsafe { libc::atexit(restore_terminal_atexit) };
-            log::debug!("TerminalGuard::new: atexit registered globally, result={}", result);
+            log::debug!("TerminalGuard::new: atexit registered, result={}", result);
         }
 
         if let Some(ref orig) = original_mode {
@@ -573,7 +571,7 @@ impl Drop for TerminalGuard {
             log::debug!("TerminalGuard::drop: not restored yet, calling restore()");
             self.restore();
         } else {
-            log::debug!("TerminalGuard::drop: already restored, nothing to do");
+            log::debug!("TerminalGuard::drop: already restored");
         }
     }
 }
@@ -657,6 +655,13 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
                     // EOF: set exit_code so main loop can break and restore terminal
                     log::debug!("handle_streaming_unix: reader got EOF, setting exit_code=-1");
                     *exit_code_clone.lock().unwrap() = Some(-1);
+
+                    // Restore terminal on EOF too (VM shutdown may bypass normal exit)
+                    let guard = TERMINAL_STATE.lock().unwrap();
+                    if let Some(orig) = guard.as_ref() {
+                        let _ = unsafe { libc::tcsetattr(0, libc::TCSANOW, orig) };
+                    }
+
                     break;
                 }
                 Ok(_) => {
@@ -677,6 +682,17 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
                             StreamMessage::Exit { code } => {
                                 log::debug!("handle_streaming_unix: got Exit code={}", code);
                                 *exit_code_clone.lock().unwrap() = Some(code);
+
+                                // CRITICAL: Restore terminal IMMEDIATELY on receiving Exit.
+                                // libkrun uses libc::_exit() which bypasses atexit/Drop.
+                                // The VM thread terminates the process before poll() can return.
+                                // We must restore NOW, not wait for main loop.
+                                let guard = TERMINAL_STATE.lock().unwrap();
+                                if let Some(orig) = guard.as_ref() {
+                                    let _ = unsafe { libc::tcsetattr(0, libc::TCSANOW, orig) };
+                                    log::debug!("handle_streaming_unix: terminal restored in reader thread");
+                                }
+
                                 break;
                             }
                             StreamMessage::Error { message } => {
@@ -692,6 +708,13 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
                 Err(e) => {
                     log::debug!("handle_streaming_unix: reader error: {}", e);
                     *exit_code_clone.lock().unwrap() = Some(-1);
+
+                    // Restore terminal on error too
+                    let guard = TERMINAL_STATE.lock().unwrap();
+                    if let Some(orig) = guard.as_ref() {
+                        let _ = unsafe { libc::tcsetattr(0, libc::TCSANOW, orig) };
+                    }
+
                     break;
                 }
             }
