@@ -39,9 +39,25 @@ use nix::poll::{poll, PollFd, PollFlags};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use crate::models::IoMode;
+use libc;
 
 lazy_static! {
     static ref RESIZE_PENDING: AtomicBool = AtomicBool::new(false);
+    static ref CLIENT_TERMINAL_STATE: std::sync::Mutex<Option<termios::Termios>> = std::sync::Mutex::new(None);
+    static ref CLIENT_ATEXIT_REGISTERED: AtomicBool = AtomicBool::new(false);
+}
+
+/// Atexit handler to restore terminal on process exit.
+/// std::process::exit() skips Drop, so this ensures terminal restoration.
+extern "C" fn restore_client_terminal_atexit() {
+    let guard = CLIENT_TERMINAL_STATE.lock().unwrap();
+    if let Some(orig) = guard.as_ref() {
+        // Use stdin fd directly via nix's tcsetattr
+        let stdin = std::io::stdin();
+        let stdin_fd = stdin.as_fd();
+        let _ = termios::tcsetattr(stdin_fd, termios::SetArg::TCSANOW, orig);
+        log::debug!("RawTerminalGuard::atexit: terminal restored via atexit handler");
+    }
 }
 
 extern "C" fn handle_sigwinch(_: i32) {
@@ -761,8 +777,10 @@ fn wait_ready_and_send_command_impl(
 }
 
 /// Guard for raw terminal mode restoration.
+/// Also registers atexit handler because std::process::exit() skips Drop.
 struct RawTerminalGuard {
     original_termios: termios::Termios,
+    restored: bool,
 }
 
 impl RawTerminalGuard {
@@ -772,6 +790,19 @@ impl RawTerminalGuard {
         log::debug!("RawTerminalGuard::new: stdin_fd={:?}", stdin_fd);
         let original_termios = termios::tcgetattr(stdin_fd)?;
         log::debug!("RawTerminalGuard::new: original local_flags={:?}", original_termios.local_flags);
+
+        // Store in global for atexit handler
+        {
+            let mut guard = CLIENT_TERMINAL_STATE.lock().unwrap();
+            *guard = Some(original_termios.clone());
+        }
+
+        // Register atexit handler (only once globally)
+        if CLIENT_ATEXIT_REGISTERED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            let result = unsafe { libc::atexit(restore_client_terminal_atexit) };
+            log::debug!("RawTerminalGuard::new: atexit registered globally, result={}", result);
+        }
+
         let mut raw_termios = original_termios.clone();
         termios::cfmakeraw(&mut raw_termios);
         // Ensure ECHO is definitely disabled
@@ -786,16 +817,37 @@ impl RawTerminalGuard {
         // Use TCSAFLUSH to discard any pending input
         termios::tcsetattr(stdin_fd, termios::SetArg::TCSAFLUSH, &raw_termios)?;
         log::debug!("RawTerminalGuard::new: raw terminal mode set successfully");
-        Ok(Self { original_termios })
+        Ok(Self { original_termios, restored: false })
+    }
+
+    /// Manually restore terminal settings before drop.
+    /// Must be called before function returns to avoid race with shell prompt.
+    fn restore(&mut self) {
+        if self.restored {
+            log::debug!("RawTerminalGuard::restore: already restored");
+            return;
+        }
+        self.restored = true;
+        log::debug!("RawTerminalGuard::restore: restoring original terminal settings");
+        let stdin = std::io::stdin();
+        let stdin_fd = stdin.as_fd();
+        // Use TCSANOW for immediate restoration
+        let _ = termios::tcsetattr(stdin_fd, termios::SetArg::TCSANOW, &self.original_termios);
+        // Verify restoration
+        if let Ok(current) = termios::tcgetattr(stdin_fd) {
+            log::debug!("RawTerminalGuard::restore: verified local_flags={:?}", current.local_flags);
+        }
     }
 }
 
 impl Drop for RawTerminalGuard {
     fn drop(&mut self) {
-        log::debug!("RawTerminalGuard::drop: restoring original terminal settings");
-        let stdin = std::io::stdin();
-        let stdin_fd = stdin.as_fd();
-        let _ = termios::tcsetattr(stdin_fd, termios::SetArg::TCSADRAIN, &self.original_termios);
+        if !self.restored {
+            log::debug!("RawTerminalGuard::drop: not restored yet, calling restore()");
+            self.restore();
+        } else {
+            log::debug!("RawTerminalGuard::drop: already restored");
+        }
     }
 }
 
@@ -1094,7 +1146,7 @@ fn handle_streaming(stream: &mut TcpStream, use_pty: bool) -> Result<i32> {
     let resize_stream = Arc::clone(&signal_stream);
 
     // Raw terminal guard - must live for the duration of PTY mode
-    let _raw_guard: Option<RawTerminalGuard> = if use_pty {
+    let mut raw_guard: Option<RawTerminalGuard> = if use_pty {
         setup_pty_mode(Arc::clone(&signal_stream), Arc::clone(&resize_stream))?
     } else {
         None
@@ -1124,6 +1176,13 @@ fn handle_streaming(stream: &mut TcpStream, use_pty: bool) -> Result<i32> {
     // Wait for stdin thread to exit to avoid process hang
     if let Some(handle) = stdin_thread {
         let _ = handle.join();
+    }
+
+    // CRITICAL: Restore terminal BEFORE returning.
+    // The shell prints its prompt on SIGCHLD which fires when child exits.
+    // Any delay means the prompt is printed in raw mode.
+    if let Some(ref mut guard) = raw_guard {
+        guard.restore();
     }
 
     result

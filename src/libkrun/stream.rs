@@ -29,6 +29,7 @@ use windows::Win32::Foundation::HANDLE;
 #[cfg(unix)]
 lazy_static! {
     static ref RESIZE_PENDING: AtomicBool = AtomicBool::new(false);
+    static ref ATEXIT_REGISTERED: AtomicBool = AtomicBool::new(false);
 }
 
 #[cfg(unix)]
@@ -208,6 +209,8 @@ fn handle_streaming_simple(stream: &mut std::os::unix::net::UnixStream, is_batch
             match reader.read_line(&mut line) {
                 Ok(0) => {
                     log::debug!("handle_streaming_simple: reader got EOF after {} bytes", total_bytes);
+                    // EOF: set exit_code so main loop can break
+                    *exit_code_clone.lock().unwrap() = Some(-1);
                     break;
                 }
                 Ok(n) => {
@@ -260,6 +263,8 @@ fn handle_streaming_simple(stream: &mut std::os::unix::net::UnixStream, is_batch
                 }
                 Err(e) => {
                     log::debug!("handle_streaming_simple: reader error: {}", e);
+                    // Error: set exit_code so main loop can break
+                    *exit_code_clone.lock().unwrap() = Some(-1);
                     break;
                 }
             }
@@ -391,10 +396,27 @@ pub fn send_command_via_vsock(
 
 /// RAII guard to restore terminal settings on drop.
 /// Can also be manually restored via restore() method.
+/// On macOS, also registers atexit handler because std::process::exit() skips Drop.
 #[cfg(unix)]
 struct TerminalGuard {
     original_mode: Option<libc::termios>,
     restored: bool,  // Track if we've already restored
+}
+
+#[cfg(unix)]
+static TERMINAL_STATE: std::sync::Mutex<Option<libc::termios>> = std::sync::Mutex::new(None);
+
+#[cfg(unix)]
+extern "C" fn restore_terminal_atexit() {
+    let guard = TERMINAL_STATE.lock().unwrap();
+    if let Some(orig) = guard.as_ref() {
+        // Use fd 0 (stdin) directly - no need for stdin.lock() in atexit
+        // At process exit, all threads except the caller are already terminated
+        let fd = 0;
+        // Use TCSANOW for immediate restoration
+        let _ = unsafe { libc::tcsetattr(fd, libc::TCSANOW, orig) };
+        log::debug!("TerminalGuard::atexit: terminal restored via atexit handler");
+    }
 }
 
 #[cfg(unix)]
@@ -408,17 +430,42 @@ impl TerminalGuard {
 
         // Check if stdin is a tty before attempting terminal operations
         let is_tty = unsafe { libc::isatty(stdin_fd) } == 1;
+        log::debug!("TerminalGuard::new: stdin_fd={}, is_tty={}", stdin_fd, is_tty);
 
         let original_mode = if is_tty {
             let mut termios: libc::termios = unsafe { std::mem::zeroed() };
             if unsafe { libc::tcgetattr(stdin_fd, &mut termios) } == 0 {
+                // Log original mode: lflags
+                let lflags = termios.c_lflag;
+                log::debug!("TerminalGuard::new: tcgetattr succeeded, original lflags=0x{:04x} (icanon={} isig={} echo={} iexten={})",
+                    lflags,
+                    (lflags & libc::ICANON) != 0,
+                    (lflags & libc::ISIG) != 0,
+                    (lflags & libc::ECHO) != 0,
+                    (lflags & libc::IEXTEN) != 0);
                 Some(termios)
             } else {
+                let err = std::io::Error::last_os_error();
+                log::debug!("TerminalGuard::new: tcgetattr failed: {}", err);
                 None
             }
         } else {
             None
         };
+
+        // Store in global for atexit handler
+        {
+            let mut guard = TERMINAL_STATE.lock().unwrap();
+            *guard = original_mode.clone();
+        }
+
+        // Register atexit handler (only once globally)
+        if original_mode.is_some() &&
+           ATEXIT_REGISTERED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            // Note: libc::atexit returns 0 on success
+            let result = unsafe { libc::atexit(restore_terminal_atexit) };
+            log::debug!("TerminalGuard::new: atexit registered globally, result={}", result);
+        }
 
         if let Some(ref orig) = original_mode {
             let mut raw = *orig;
@@ -431,8 +478,29 @@ impl TerminalGuard {
             raw.c_cflag &= !(libc::CSIZE | libc::PARENB);
             raw.c_cflag |= libc::CS8;
 
+            // Log new raw mode
+            let raw_lflags = raw.c_lflag;
+            log::debug!("TerminalGuard::new: setting raw mode, new lflags=0x{:04x} (icanon={} isig={} echo={} iexten={})",
+                raw_lflags,
+                (raw_lflags & libc::ICANON) != 0,
+                (raw_lflags & libc::ISIG) != 0,
+                (raw_lflags & libc::ECHO) != 0,
+                (raw_lflags & libc::IEXTEN) != 0);
+
             if unsafe { libc::tcsetattr(stdin_fd, libc::TCSAFLUSH, &raw) } != 0 {
-                // Can't log in cooked mode here, just silently continue
+                let err = std::io::Error::last_os_error();
+                log::debug!("TerminalGuard::new: tcsetattr(TCSAFLUSH, raw) failed: {}", err);
+            } else {
+                // Verify what was actually set
+                let mut verify: libc::termios = unsafe { std::mem::zeroed() };
+                if unsafe { libc::tcgetattr(stdin_fd, &mut verify) } == 0 {
+                    let verify_lflags = verify.c_lflag;
+                    log::debug!("TerminalGuard::new: after tcsetattr, verified lflags=0x{:04x} (icanon={} isig={} echo={})",
+                        verify_lflags,
+                        (verify_lflags & libc::ICANON) != 0,
+                        (verify_lflags & libc::ISIG) != 0,
+                        (verify_lflags & libc::ECHO) != 0);
+                }
             }
         }
         // stdin_lock is dropped here, releasing the lock
@@ -446,11 +514,21 @@ impl TerminalGuard {
         use std::os::unix::io::AsRawFd;
 
         if self.restored {
+            log::debug!("TerminalGuard::restore: already restored, skipping");
             return;
         }
         self.restored = true;
+        log::debug!("TerminalGuard::restore: starting restore");
 
         if let Some(ref orig) = self.original_mode {
+            let orig_lflags = orig.c_lflag;
+            log::debug!("TerminalGuard::restore: will restore to lflags=0x{:04x} (icanon={} isig={} echo={} iexten={})",
+                orig_lflags,
+                (orig_lflags & libc::ICANON) != 0,
+                (orig_lflags & libc::ISIG) != 0,
+                (orig_lflags & libc::ECHO) != 0,
+                (orig_lflags & libc::IEXTEN) != 0);
+
             // Flush all output before restoring terminal settings
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
@@ -462,9 +540,28 @@ impl TerminalGuard {
             let stdin = std::io::stdin();
             let stdin_lock = stdin.lock();
             let fd = stdin_lock.as_raw_fd();
+            log::debug!("TerminalGuard::restore: fd={}", fd);
 
-            let _ = unsafe { libc::tcsetattr(fd, libc::TCSANOW, orig) };
+            let result = unsafe { libc::tcsetattr(fd, libc::TCSANOW, orig) };
+            log::debug!("TerminalGuard::restore: tcsetattr(TCSANOW) returned {}", result);
+
+            // Verify what was actually restored
+            let mut verify: libc::termios = unsafe { std::mem::zeroed() };
+            if unsafe { libc::tcgetattr(fd, &mut verify) } == 0 {
+                let verify_lflags = verify.c_lflag;
+                log::debug!("TerminalGuard::restore: after tcsetattr, verified lflags=0x{:04x} (icanon={} isig={} echo={})",
+                    verify_lflags,
+                    (verify_lflags & libc::ICANON) != 0,
+                    (verify_lflags & libc::ISIG) != 0,
+                    (verify_lflags & libc::ECHO) != 0);
+            } else {
+                let err = std::io::Error::last_os_error();
+                log::debug!("TerminalGuard::restore: tcgetattr verification failed: {}", err);
+            }
+        } else {
+            log::debug!("TerminalGuard::restore: no original_mode to restore");
         }
+        log::debug!("TerminalGuard::restore: done");
     }
 }
 
@@ -473,7 +570,10 @@ impl Drop for TerminalGuard {
     fn drop(&mut self) {
         // If not already restored, restore now (backup for early panics/returns)
         if !self.restored {
+            log::debug!("TerminalGuard::drop: not restored yet, calling restore()");
             self.restore();
+        } else {
+            log::debug!("TerminalGuard::drop: already restored, nothing to do");
         }
     }
 }
@@ -530,9 +630,13 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
 
     use console::Term;
 
+    log::debug!("handle_streaming_unix: starting");
+
     // Create guards but we'll manually restore terminal before returning
     let mut term_guard = TerminalGuard::new();
+    log::debug!("handle_streaming_unix: TerminalGuard created");
     let _signal_guard = SignalGuard::new();
+    log::debug!("handle_streaming_unix: SignalGuard created");
 
     let term = Term::stdout();
 
@@ -541,13 +645,20 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
     let exit_code = Arc::new(Mutex::new(None));
     let exit_code_clone = exit_code.clone();
 
+    log::debug!("handle_streaming_unix: spawning reader thread");
     let reader = thread::spawn(move || {
         let mut reader = std::io::BufReader::new(&stream_clone);
         let mut line = String::new();
+        log::debug!("handle_streaming_unix: reader thread started");
         loop {
             line.clear();
             match reader.read_line(&mut line) {
-                Ok(0) => break,
+                Ok(0) => {
+                    // EOF: set exit_code so main loop can break and restore terminal
+                    log::debug!("handle_streaming_unix: reader got EOF, setting exit_code=-1");
+                    *exit_code_clone.lock().unwrap() = Some(-1);
+                    break;
+                }
                 Ok(_) => {
                     if let Ok(msg) = serde_json::from_str::<StreamMessage>(&line) {
                         match msg {
@@ -564,6 +675,7 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
                                 }
                             }
                             StreamMessage::Exit { code } => {
+                                log::debug!("handle_streaming_unix: got Exit code={}", code);
                                 *exit_code_clone.lock().unwrap() = Some(code);
                                 break;
                             }
@@ -577,15 +689,27 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
                         }
                     }
                 }
-                Err(_) => break,
+                Err(e) => {
+                    log::debug!("handle_streaming_unix: reader error: {}", e);
+                    *exit_code_clone.lock().unwrap() = Some(-1);
+                    break;
+                }
             }
         }
+        log::debug!("handle_streaming_unix: reader thread exiting");
     });
+    log::debug!("handle_streaming_unix: reader thread spawned, entering main loop");
 
     let mut seq: u64 = 0;
     let mut buf = [0u8; 4096];
+    let mut poll_count = 0;
     loop {
+        poll_count += 1;
+        if poll_count % 20 == 0 {
+            log::debug!("handle_streaming_unix: poll iteration {}, checking exit_code", poll_count);
+        }
         if exit_code.lock().unwrap().is_some() {
+            log::debug!("handle_streaming_unix: exit_code detected, breaking from main loop");
             break;
         }
 
@@ -603,11 +727,17 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
             events:  libc::POLLIN,
             revents: 0,
         }];
+        log::trace!("handle_streaming_unix: calling poll()");
         let ready = unsafe { libc::poll(pfd.as_mut_ptr(), 1, 50) };
+        log::trace!("handle_streaming_unix: poll returned {}", ready);
         if ready > 0 && ((pfd[0].revents & libc::POLLIN) != 0 || (pfd[0].revents & libc::POLLHUP) != 0) {
             match std::io::stdin().read(&mut buf) {
-                Ok(0) => break,
+                Ok(0) => {
+                    log::debug!("handle_streaming_unix: stdin EOF, breaking");
+                    break;
+                }
                 Ok(n) => {
+                    log::debug!("handle_streaming_unix: stdin read {} bytes", n);
                     let data = STANDARD.encode(&buf[..n]);
                     let msg = StreamMessage::Stdin { data, seq };
                     seq += 1;
@@ -616,21 +746,29 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
                         let _ = stream.write_all(b"\n");
                     }
                 }
-                Err(_) => break,
+                Err(e) => {
+                    log::debug!("handle_streaming_unix: stdin error: {}, breaking", e);
+                    break;
+                }
             }
         }
     }
+    log::debug!("handle_streaming_unix: main loop exited after {} iterations, calling reader.join()", poll_count);
 
     reader.join().ok();
+    log::debug!("handle_streaming_unix: reader thread joined, about to restore terminal");
 
     // CRITICAL: Restore terminal IMMEDIATELY before any other output
     // The shell prints its prompt on SIGCHLD which fires when child exits.
     // We must restore BEFORE that happens, with NO delays or logging.
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
+    log::debug!("handle_streaming_unix: flushed stdout/stderr, calling restore()");
     term_guard.restore();
+    log::debug!("handle_streaming_unix: restore() completed");
 
     let code = exit_code.lock().unwrap().unwrap_or(0);
+    log::debug!("handle_streaming_unix: returning with code {}", code);
     Ok(code)
 }
 
