@@ -390,38 +390,90 @@ pub fn send_command_via_vsock(
 }
 
 /// RAII guard to restore terminal settings on drop.
+/// Can also be manually restored via restore() method.
 #[cfg(unix)]
 struct TerminalGuard {
-    original_mode: Option<nix::sys::termios::Termios>,
+    original_mode: Option<libc::termios>,
+    restored: bool,  // Track if we've already restored
 }
 
 #[cfg(unix)]
 impl TerminalGuard {
     fn new() -> Self {
-        let original_mode = nix::sys::termios::tcgetattr(std::io::stdin()).ok();
-        log::debug!("TerminalGuard::new: original_mode={:?}, is_some={}",
-            original_mode.is_some(), original_mode.is_some());
+        use std::os::unix::io::AsRawFd;
+
+        let stdin = std::io::stdin();
+        let stdin_lock = stdin.lock();
+        let stdin_fd = stdin_lock.as_raw_fd();
+
+        // Check if stdin is a tty before attempting terminal operations
+        let is_tty = unsafe { libc::isatty(stdin_fd) } == 1;
+
+        let original_mode = if is_tty {
+            let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+            if unsafe { libc::tcgetattr(stdin_fd, &mut termios) } == 0 {
+                Some(termios)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         if let Some(ref orig) = original_mode {
-            let mut raw = orig.clone();
-            nix::sys::termios::cfmakeraw(&mut raw);
-            log::debug!("TerminalGuard::new: setting raw mode with TCSAFLUSH");
-            // Use TCSAFLUSH to discard any pending input before setting raw mode
-            let _ = nix::sys::termios::tcsetattr(std::io::stdin(), nix::sys::termios::SetArg::TCSAFLUSH, &raw);
+            let mut raw = *orig;
+            // cfmakeraw equivalent from libc
+            raw.c_iflag &= !(libc::IGNBRK | libc::BRKINT | libc::PARMRK | libc::ISTRIP
+                          | libc::INLCR | libc::IGNCR | libc::ICRNL | libc::IXON);
+            raw.c_oflag &= !libc::OPOST;
+            raw.c_lflag &= !(libc::ECHO | libc::ECHONL | libc::ICANON | libc::ISIG
+                          | libc::IEXTEN);
+            raw.c_cflag &= !(libc::CSIZE | libc::PARENB);
+            raw.c_cflag |= libc::CS8;
+
+            if unsafe { libc::tcsetattr(stdin_fd, libc::TCSAFLUSH, &raw) } != 0 {
+                // Can't log in cooked mode here, just silently continue
+            }
         }
-        Self { original_mode }
+        // stdin_lock is dropped here, releasing the lock
+        Self { original_mode, restored: false }
+    }
+
+    /// Manually restore terminal settings before drop.
+    /// This should be called before the function returns to ensure
+    /// the shell prompt is printed in cooked mode.
+    fn restore(&mut self) {
+        use std::os::unix::io::AsRawFd;
+
+        if self.restored {
+            return;
+        }
+        self.restored = true;
+
+        if let Some(ref orig) = self.original_mode {
+            // Flush all output before restoring terminal settings
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+
+            // IMMEDIATELY restore - no delay!
+            // The shell prints its prompt on SIGCHLD which happens as soon
+            // as the child process exits. Any delay means the prompt gets
+            // printed in raw mode.
+            let stdin = std::io::stdin();
+            let stdin_lock = stdin.lock();
+            let fd = stdin_lock.as_raw_fd();
+
+            let _ = unsafe { libc::tcsetattr(fd, libc::TCSANOW, orig) };
+        }
     }
 }
 
 #[cfg(unix)]
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        log::debug!("TerminalGuard::drop: restoring terminal, original_mode.is_some={}", self.original_mode.is_some());
-        if let Some(ref orig) = self.original_mode {
-            // Use TCSADRAIN to wait for all output to be transmitted before restoring.
-            // This prevents terminal settings from being restored while output is still
-            // being written, which could cause terminal corruption.
-            let _ = nix::sys::termios::tcsetattr(std::io::stdin(), nix::sys::termios::SetArg::TCSADRAIN, orig);
-            log::debug!("TerminalGuard::drop: terminal restored");
+        // If not already restored, restore now (backup for early panics/returns)
+        if !self.restored {
+            self.restore();
         }
     }
 }
@@ -478,8 +530,8 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
 
     use console::Term;
 
-    // RAII guards ensure terminal and signals are restored even on panic or early return
-    let _term_guard = TerminalGuard::new();
+    // Create guards but we'll manually restore terminal before returning
+    let mut term_guard = TerminalGuard::new();
     let _signal_guard = SignalGuard::new();
 
     let term = Term::stdout();
@@ -570,6 +622,13 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
     }
 
     reader.join().ok();
+
+    // CRITICAL: Restore terminal IMMEDIATELY before any other output
+    // The shell prints its prompt on SIGCHLD which fires when child exits.
+    // We must restore BEFORE that happens, with NO delays or logging.
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    term_guard.restore();
 
     let code = exit_code.lock().unwrap().unwrap_or(0);
     Ok(code)
