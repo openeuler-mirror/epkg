@@ -426,23 +426,63 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// RAII guard to restore signal handlers on drop.
+#[cfg(unix)]
+struct SignalGuard {
+    original_sigwinch: Option<nix::sys::signal::SigHandler>,
+    original_sigint: Option<nix::sys::signal::SigHandler>,
+    original_sigterm: Option<nix::sys::signal::SigHandler>,
+}
+
+#[cfg(unix)]
+impl SignalGuard {
+    fn new() -> Self {
+        use nix::sys::signal::{signal, SigHandler, Signal};
+
+        let original_sigwinch = unsafe { signal(Signal::SIGWINCH, SigHandler::Handler(handle_sigwinch)) }.ok();
+        let original_sigint = unsafe { signal(Signal::SIGINT, SigHandler::SigIgn) }.ok();
+        let original_sigterm = unsafe { signal(Signal::SIGTERM, SigHandler::SigIgn) }.ok();
+        log::debug!("SignalGuard::new: sigwinch={:?}, sigint={:?}, sigterm={:?}",
+            original_sigwinch, original_sigint, original_sigterm);
+        Self { original_sigwinch, original_sigint, original_sigterm }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for SignalGuard {
+    fn drop(&mut self) {
+        use nix::sys::signal::{signal, Signal};
+
+        log::debug!("SignalGuard::drop: restoring signal handlers");
+        // Clear any pending resize flag to avoid spurious resize after cleanup
+        RESIZE_PENDING.store(false, Ordering::SeqCst);
+        // Restore SIGWINCH
+        if let Some(handler) = self.original_sigwinch {
+            let _ = unsafe { signal(Signal::SIGWINCH, handler) };
+        }
+        // Restore SIGINT
+        if let Some(handler) = self.original_sigint {
+            let _ = unsafe { signal(Signal::SIGINT, handler) };
+        }
+        // Restore SIGTERM
+        if let Some(handler) = self.original_sigterm {
+            let _ = unsafe { signal(Signal::SIGTERM, handler) };
+        }
+        log::debug!("SignalGuard::drop: signal handlers restored");
+    }
+}
+
 #[cfg(unix)]
 fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<i32> {
     use std::os::unix::io::AsRawFd;
 
     use console::Term;
-    use nix::sys::signal::{signal, SigHandler, Signal};
 
-    // RAII guard ensures terminal is restored even on panic or early return
+    // RAII guards ensure terminal and signals are restored even on panic or early return
     let _term_guard = TerminalGuard::new();
+    let _signal_guard = SignalGuard::new();
 
     let term = Term::stdout();
-
-    unsafe {
-        let _ = signal(Signal::SIGWINCH, SigHandler::Handler(handle_sigwinch));
-        let _ = signal(Signal::SIGINT, SigHandler::SigIgn);
-        let _ = signal(Signal::SIGTERM, SigHandler::SigIgn);
-    }
 
     let stdin_fd = std::io::stdin().as_raw_fd();
     let stream_clone = stream.try_clone()?;
