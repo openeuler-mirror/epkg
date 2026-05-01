@@ -518,6 +518,18 @@ fn df_resolve_mounts(options: &DfOptions) -> Result<Vec<(String, String, String)
     Ok(filtered)
 }
 
+fn format_block_size_label(size: u64) -> String {
+    const M: u64 = 1024 * 1024;
+    const G: u64 = 1024 * 1024 * 1024;
+    match size {
+        1 => String::new(),
+        1024 => "1K".to_string(),
+        M => "1M".to_string(),
+        G => "1G".to_string(),
+        _ => format!("{}", size),
+    }
+}
+
 fn print_df_table_header(options: &DfOptions, display_block_size: u64) {
     if options.posix_format {
         print!("Filesystem          ");
@@ -526,11 +538,7 @@ fn print_df_table_header(options: &DfOptions, display_block_size: u64) {
         }
         print!(
             "{}-blocks   Used Available Capacity Mounted on\n",
-            if display_block_size == 1 {
-                String::new()
-            } else {
-                display_block_size.to_string()
-            }
+            format_block_size_label(display_block_size)
         );
     } else {
         print!("Filesystem          ");
@@ -548,7 +556,7 @@ fn print_df_table_header(options: &DfOptions, display_block_size: u64) {
                 if options.posix_format {
                     String::new()
                 } else {
-                    display_block_size.to_string()
+                    format_block_size_label(display_block_size)
                 }
             );
         }
