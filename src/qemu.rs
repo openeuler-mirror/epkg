@@ -4,6 +4,16 @@ use std::io::BufRead;
 
 use crate::run::RunOptions;
 
+/// Generate a unique vsock CID for QEMU VM.
+/// Uses PID as CID to ensure uniqueness across parallel VM instances.
+/// CID must be >= 3 (0=invalid, 1=reserved for hypervisor, 2=VMADDR_CID_HOST).
+/// For safety, we use PID + 3 to guarantee CID >= 3.
+pub fn generate_vsock_cid() -> u32 {
+    // Use PID as base, add 3 to ensure CID >= 3
+    let pid = std::process::id();
+    pid + 3
+}
+
 /// Detect CPU model from /proc/cpuinfo
 /// Returns the CPU model name if found, None otherwise
 fn detect_host_cpu_model() -> Option<String> {
@@ -474,6 +484,7 @@ fn build_qemu_command(
     env_root: &Path,
     mount_tag: &str,
     use_vsock: bool,
+    guest_cid: u32,
     extra_qemu_args: &str,
     serial_log_path: &std::path::Path,
     vm_cpus: u8,
@@ -560,15 +571,16 @@ fn build_qemu_command(
 
     // Optional virtio-vsock device for vsock-based control plane.
     if use_vsock {
-        // Guest CID 3 matches the host-side vm_client vsock connector.
+        // Use dynamic guest CID to allow parallel VM instances.
+        // CID must be >= 3 (0=invalid, 1=reserved, 2=host).
         // aarch64 virt machine has virtio-mmio, use vhost-vsock-device (MMIO)
         // x86_64 pc machine uses PCI, use vhost-vsock-pci (PCI)
         qemu_cmd
             .arg("-device")
             .arg(if std::env::consts::ARCH == "aarch64" {
-                "vhost-vsock-device,guest-cid=3".to_string()
+                format!("vhost-vsock-device,guest-cid={}", guest_cid)
             } else {
-                "vhost-vsock-pci,guest-cid=3".to_string()
+                format!("vhost-vsock-pci,guest-cid={}", guest_cid)
             });
     }
 
@@ -717,6 +729,7 @@ fn spawn_qemu(
     env_root: &Path,
     mount_tag: &str,
     use_vsock: bool,
+    guest_cid: u32,
     extra_qemu_args: &str,
     qemu_log_path: &Path,
     vm_cpus: u8,
@@ -734,6 +747,7 @@ fn spawn_qemu(
         env_root,
         mount_tag,
         use_vsock,
+        guest_cid,
         extra_qemu_args,
         qemu_log_path,
         vm_cpus,
@@ -801,6 +815,7 @@ fn handle_guest_execution(
     qemu_child: &mut std::process::Child,
     use_control_channel: bool,
     use_vsock: bool,
+    guest_cid: u32,
     cmd_parts: &[String],
     io_mode: crate::models::IoMode,
     qemu_log_path: &std::path::Path,
@@ -818,6 +833,7 @@ fn handle_guest_execution(
         match client::wait_ready_and_send_command_with_qemu(
             cmd_parts,
             io_mode,
+            guest_cid,
             10000,
             None,
             reuse_session,
@@ -892,6 +908,7 @@ fn handle_guest_execution(
         match client::wait_ready_and_send_command_with_qemu(
             cmd_parts,
             io_mode,
+            guest_cid,
             10000,
             None,
             reuse_session,
@@ -1024,10 +1041,24 @@ pub fn run_command_in_qemu(
 ) -> Result<()> {
     // For vm_reuse_connect, connect to existing VM session
     if run_options.vm_reuse_connect {
+        // Discover session to get CID
+        let env_name = &crate::models::config().common.env_name;
+        let info = crate::vm::discover_vm_session(env_name)?
+            .ok_or_else(|| eyre::eyre!("No active VM session found for {}", env_name))?;
+
+        // Parse CID from socket_path (format: "vsock:{CID}")
+        let socket_str = info.socket_path.to_string_lossy();
+        let cid: u32 = socket_str
+            .strip_prefix("vsock:")
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| eyre::eyre!("Invalid vsock socket_path: {}", socket_str))?;
+        log::info!("qemu: reusing VM session with CID {}", cid);
+
         let (cmd_parts, _) = build_guest_command(guest_cmd_path, &run_options.args)?;
         let code = client::send_command_to_running_qemu_guest(
             &cmd_parts,
             run_options.io_mode,
+            cid,
             run_options.vm_keep_timeout,
             run_options.user.as_deref(),
         )?;
@@ -1044,6 +1075,25 @@ pub fn run_command_in_qemu(
     let vm_cpus = crate::run::resolve_vm_cpus(run_options);
     let vm_memory_mb = crate::run::resolve_vm_memory_mib(run_options);
 
+    // Generate unique CID for this VM instance
+    let guest_cid = generate_vsock_cid();
+    log::info!("qemu: generated vsock CID {} for VM", guest_cid);
+
+    // Register session file for cross-process VM discovery
+    // This allows other processes to reuse this VM via vm_reuse_connect
+    let env_name = &crate::models::config().common.env_name;
+    let socket_path = std::path::PathBuf::from(format!("vsock:{}", guest_cid));
+    let daemon_pid = std::process::id();
+    let config = crate::vm::VmConfig {
+        timeout: run_options.vm_keep_timeout.map(|t| t).unwrap_or(0),
+        extend: 10,
+        cpus: vm_cpus as u32,
+        memory_mib: vm_memory_mb,
+        backend: "qemu".to_string(),
+    };
+    crate::vm::register_vm_session(env_root, env_name, &socket_path, "qemu", &config, daemon_pid)?;
+    log::info!("qemu: registered VM session for {} (CID={}, PID={})", env_name, guest_cid, daemon_pid);
+
     let init_cmd_append = if use_cmdline_mode { Some(init_cmd.as_str()) } else { None };
     let init_user_append = if use_cmdline_mode { run_options.user.as_deref() } else { None };
 
@@ -1055,6 +1105,7 @@ pub fn run_command_in_qemu(
         env_root,
         &setup.mount_tag,
         use_vsock,
+        guest_cid,
         &setup.extra_qemu_args,
         &setup.qemu_log_path,
         vm_cpus,
@@ -1074,6 +1125,7 @@ pub fn run_command_in_qemu(
         &mut qemu_child,
         use_control_channel,
         use_vsock,
+        guest_cid,
         &cmd_parts,
         run_options.io_mode,
         &setup.qemu_log_path,

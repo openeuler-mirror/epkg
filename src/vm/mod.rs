@@ -28,7 +28,7 @@ pub mod client;
 // Available on Linux (for qemu) or when libkrun feature is enabled
 #[cfg(any(feature = "libkrun", target_os = "linux"))]
 #[allow(dead_code, unused_imports)] // Linux VM guest build may not use these
-pub use session::{register_vm_session, unregister_vm_session};
+pub use session::{register_vm_session, unregister_vm_session, VmConfig};
 
 // These are only available/used with libkrun feature (also used by qemu on Linux)
 #[cfg(feature = "libkrun")]
@@ -36,8 +36,16 @@ pub use session::{
     VmSessionInfo, discover_vm_session, register_vm_session_simple, vm_socket_path_for_env,
 };
 
+// For Linux (qemu backend without libkrun feature), export discover_vm_session
+#[cfg(all(target_os = "linux", not(feature = "libkrun")))]
+pub use session::discover_vm_session;
+
 // is_vm_session_active is also used by run.rs on non-Linux platforms
 #[cfg(any(feature = "libkrun", not(target_os = "linux")))]
+pub use session::is_vm_session_active;
+
+// Also export is_vm_session_active for Linux (for qemu backend)
+#[cfg(all(target_os = "linux", not(feature = "libkrun")))]
 pub use session::is_vm_session_active;
 
 pub use start::cmd_vm_start;

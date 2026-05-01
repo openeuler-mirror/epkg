@@ -108,7 +108,9 @@ fn vm_start(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()> {
     let daemon_pid = child_pid.map(|p| p as u32).unwrap_or_else(std::process::id);
     #[cfg(any(feature = "libkrun", target_os = "linux"))]
     {
-        let socket_path = std::path::PathBuf::from("vsock:3");
+        // Generate CID from daemon_pid + 3 (CID must be >= 3)
+        let guest_cid = daemon_pid + 3;
+        let socket_path = std::path::PathBuf::from(format!("vsock:{}", guest_cid));
         crate::vm::register_vm_session(env_root, env_name, &socket_path, "qemu", &config, daemon_pid)?;
     }
 

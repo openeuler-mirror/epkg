@@ -116,11 +116,11 @@ fn connect_with_retry(max_retries: u32) -> Result<TcpStream> {
 }
 
 /// Connect to guest vsock server with retry logic.
-fn connect_vsock_with_retry(port: u32, max_retries: u32) -> Result<TcpStream> {
+fn connect_vsock_with_retry(cid: u32, port: u32, max_retries: u32) -> Result<TcpStream> {
     let mut retry_count = 0;
     let mut last_error = None;
     while retry_count < max_retries {
-        match connect_vsock_once(port) {
+        match connect_vsock_once(cid, port) {
             Ok(stream) => return Ok(stream),
             Err(e) => {
                 last_error = Some(e);
@@ -133,7 +133,8 @@ fn connect_vsock_with_retry(port: u32, max_retries: u32) -> Result<TcpStream> {
         }
     }
     Err(eyre::eyre!(
-        "Failed to connect to guest vsock server on port {} after {} retries: {}",
+        "Failed to connect to guest vsock CID {} port {} after {} retries: {}",
+        cid,
         port,
         max_retries,
         last_error.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "connection failed"))
@@ -179,16 +180,14 @@ fn connect_unix_socket_with_retry(sock_path: &std::path::Path, max_retries: u32)
 }
 
 /// Single vsock connect attempt, returns a TcpStream wrapper over AF_VSOCK fd.
-fn connect_vsock_once(port: u32) -> std::io::Result<TcpStream> {
-    // Use a fixed guest CID (3) matching the QEMU vsock configuration.
-    const GUEST_CID: u32 = 3;
+fn connect_vsock_once(cid: u32, port: u32) -> std::io::Result<TcpStream> {
     let fd = socket::socket(
         AddressFamily::Vsock,
         SockType::Stream,
         SockFlag::SOCK_CLOEXEC,
         None,
     )?;
-    let addr = VsockAddr::new(GUEST_CID, port);
+    let addr = VsockAddr::new(cid, port);
     // Transfer ownership of fd to raw_fd (consumes fd, no double-close)
     let raw_fd = fd.into_raw_fd();
     match socket::connect(raw_fd, &addr) {
@@ -329,21 +328,23 @@ fn send_command_via_tcp_impl(
 pub fn send_command_via_vsock(
     cmd_parts: &[String],
     io_mode: IoMode,
+    cid: u32,
     port: u32,
     unix_socket_path: Option<&std::path::Path>,
 ) -> Result<i32> {
-    send_command_via_vsock_impl(cmd_parts, io_mode, port, unix_socket_path, false, None, None)
+    send_command_via_vsock_impl(cmd_parts, io_mode, cid, port, unix_socket_path, false, None, None)
 }
 
-/// Connect to an already-running QEMU guest (AF_VSOCK to fixed guest CID, command port) without
+/// Connect to an already-running QEMU guest (AF_VSOCK to guest CID, command port) without
 /// the ready handshake. Use after starting a VM with `epkg run --isolate=vm --vm-keep-timeout …`.
 pub fn send_command_to_running_qemu_guest(
     cmd_parts: &[String],
     io_mode: IoMode,
+    cid: u32,
     vm_keep_timeout_secs: Option<u32>,
     user: Option<&str>,
 ) -> Result<i32> {
-    send_command_via_vsock_impl(cmd_parts, io_mode, 10000, None, true, vm_keep_timeout_secs, user)
+    send_command_via_vsock_impl(cmd_parts, io_mode, cid, 10000, None, true, vm_keep_timeout_secs, user)
 }
 
 /// Try to discover and connect to an existing VM session.
@@ -383,12 +384,19 @@ pub fn try_execute_via_existing_vm_session(
         return Ok(None);
     }
 
-    // Connect via vsock (QEMU uses vsock:3 format in session)
+    // Connect via vsock (QEMU uses vsock:{CID} format in session)
     let socket_str = info.socket_path.to_string_lossy();
     if !socket_str.starts_with("vsock:") {
         log::debug!("vm_client: unexpected socket_path format: {}", socket_str);
         return Ok(None);
     }
+
+    // Parse CID from socket_path (format: "vsock:{CID}")
+    let cid: u32 = socket_str
+        .strip_prefix("vsock:")
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| eyre::eyre!("Invalid vsock CID in socket_path: {}", socket_str))?;
+    log::debug!("vm_client: parsed CID {} from socket_path", cid);
 
     // Use session's configured timeout for vm_keep_timeout
     // Per guest_daemon.rs:1713-1716: timeout=0 means "never timeout"
@@ -406,8 +414,8 @@ pub fn try_execute_via_existing_vm_session(
         cwd,
     );
 
-    // Connect to command port (10000)
-    let mut stream = connect_vsock_with_retry(10000, 30)?;
+    // Connect to command port (10000) using parsed CID
+    let mut stream = connect_vsock_with_retry(cid, 10000, 30)?;
 
     log::debug!("vm_client: connected to existing QEMU VM, sending command {:?}", cmd_parts);
 
@@ -481,6 +489,7 @@ fn build_extended_command_request(
 fn send_command_via_vsock_impl(
     cmd_parts: &[String],
     io_mode: IoMode,
+    cid: u32,
     port: u32,
     unix_socket_path: Option<&std::path::Path>,
     reuse_session: bool,
@@ -489,10 +498,11 @@ fn send_command_via_vsock_impl(
 ) -> Result<i32> {
     let (use_pty, is_batch) = resolve_io_mode(io_mode);
     log::debug!(
-        "vm_client: io_mode={:?}, use_pty={}, is_batch={} (vsock port {}), reuse_session={}",
+        "vm_client: io_mode={:?}, use_pty={}, is_batch={} (vsock CID {} port {}), reuse_session={}",
         io_mode,
         use_pty,
         is_batch,
+        cid,
         port,
         reuse_session
     );
@@ -502,8 +512,8 @@ fn send_command_via_vsock_impl(
         log::debug!("vm_client: connecting via Unix socket {}", sock_path.display());
         connect_unix_socket_with_retry(sock_path, 30)?
     } else {
-        // QEMU mode: connect via AF_VSOCK
-        connect_vsock_with_retry(port, 30)?
+        // QEMU mode: connect via AF_VSOCK with dynamic CID
+        connect_vsock_with_retry(cid, port, 30)?
     };
     log::debug!("vm_client: vsock connected, sending command {:?}", cmd_parts);
 
@@ -512,10 +522,11 @@ fn send_command_via_vsock_impl(
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
     log::debug!(
-        "vm_client: vsock request sent ({} bytes), pty={}, batch={}, port={}",
+        "vm_client: vsock request sent ({} bytes), pty={}, batch={}, cid={}, port={}",
         request_json.len(),
         use_pty,
         is_batch,
+        cid,
         port
     );
 
@@ -546,6 +557,7 @@ fn send_command_via_vsock_impl(
 pub fn wait_ready_and_send_command(
     cmd_parts: &[String],
     io_mode: IoMode,
+    cid: u32,
     cmd_port: u32,
     unix_socket_path: Option<&std::path::Path>,
     reuse_session: bool,
@@ -555,6 +567,7 @@ pub fn wait_ready_and_send_command(
     wait_ready_and_send_command_impl(
         cmd_parts,
         io_mode,
+        cid,
         cmd_port,
         unix_socket_path,
         reuse_session,
@@ -569,6 +582,7 @@ pub fn wait_ready_and_send_command(
 pub fn wait_ready_and_send_command_with_qemu(
     cmd_parts: &[String],
     io_mode: IoMode,
+    cid: u32,
     cmd_port: u32,
     unix_socket_path: Option<&std::path::Path>,
     reuse_session: bool,
@@ -580,6 +594,7 @@ pub fn wait_ready_and_send_command_with_qemu(
     wait_ready_and_send_command_impl(
         cmd_parts,
         io_mode,
+        cid,
         cmd_port,
         unix_socket_path,
         reuse_session,
@@ -594,6 +609,7 @@ pub fn wait_ready_and_send_command_with_qemu(
 fn wait_ready_unix_socket_then_send(
     cmd_parts: &[String],
     io_mode: IoMode,
+    _cid: u32,  // Not used for Unix socket, but kept for API consistency
     cmd_port: u32,
     cmd_path: &std::path::Path,
     reuse_session: bool,
@@ -618,13 +634,15 @@ fn wait_ready_unix_socket_then_send(
     drop(stream);
     drop(listener);
 
-    send_command_via_vsock_impl(cmd_parts, io_mode, cmd_port, Some(cmd_path), reuse_session, vm_keep_timeout_secs, user)
+    // CID is ignored for Unix socket path; the socket path itself identifies the VM
+    send_command_via_vsock_impl(cmd_parts, io_mode, 0, cmd_port, Some(cmd_path), reuse_session, vm_keep_timeout_secs, user)
 }
 
 /// QEMU: AF_VSOCK ready port, optional QEMU child monitoring, then send command.
 fn wait_ready_qemu_vsock_then_send(
     cmd_parts: &[String],
     io_mode: IoMode,
+    cid: u32,
     cmd_port: u32,
     reuse_session: bool,
     vm_keep_timeout_secs: Option<u32>,
@@ -728,12 +746,13 @@ fn wait_ready_qemu_vsock_then_send(
     let _ = nix::unistd::close(client_fd);
     let _ = nix::unistd::close(raw_fd);
 
-    send_command_via_vsock_impl(cmd_parts, io_mode, cmd_port, None, reuse_session, vm_keep_timeout_secs, user)
+    send_command_via_vsock_impl(cmd_parts, io_mode, cid, cmd_port, None, reuse_session, vm_keep_timeout_secs, user)
 }
 
 fn wait_ready_and_send_command_impl(
     cmd_parts: &[String],
     io_mode: IoMode,
+    cid: u32,
     cmd_port: u32,
     unix_socket_path: Option<&std::path::Path>,
     reuse_session: bool,
@@ -744,10 +763,11 @@ fn wait_ready_and_send_command_impl(
 ) -> Result<i32> {
     let (use_pty, is_batch) = resolve_io_mode(io_mode);
     log::debug!(
-        "vm_client: io_mode={:?}, use_pty={}, is_batch={} (cmd port {}), reuse_session={}",
+        "vm_client: io_mode={:?}, use_pty={}, is_batch={} (vsock CID {} port {}), reuse_session={}",
         io_mode,
         use_pty,
         is_batch,
+        cid,
         cmd_port,
         reuse_session
     );
@@ -756,6 +776,7 @@ fn wait_ready_and_send_command_impl(
         return wait_ready_unix_socket_then_send(
             cmd_parts,
             io_mode,
+            cid,
             cmd_port,
             cmd_path,
             reuse_session,
@@ -767,6 +788,7 @@ fn wait_ready_and_send_command_impl(
     wait_ready_qemu_vsock_then_send(
         cmd_parts,
         io_mode,
+        cid,
         cmd_port,
         reuse_session,
         vm_keep_timeout_secs,

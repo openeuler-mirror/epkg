@@ -1526,7 +1526,8 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
     let has_active_vm_session = is_vm_reuse_active_for_env(env_root) ||
         crate::vm::is_vm_session_active(_env_name);
     #[cfg(target_os = "linux")]
-    let has_active_vm_session = is_vm_reuse_active_for_env(env_root);
+    let has_active_vm_session = is_vm_reuse_active_for_env(env_root) ||
+        crate::vm::is_vm_session_active(_env_name);
 
     // If VM mode is active or an existing session exists, always enable reuse.
     // This ensures scriptlets/hooks reuse the same VM during install/upgrade.
@@ -1536,10 +1537,17 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
        run_options.effective_sandbox.isolate_mode == Some(IsolateMode::Vm) {
         run_options.reuse_vm = true;
     }
-
-    // Silence unused warning on Linux
+    // On Linux (QEMU backend), also enable reuse when VM mode is requested.
     #[cfg(target_os = "linux")]
-    let _ = has_active_vm_session;
+    if has_active_vm_session ||
+       run_options.effective_sandbox.isolate_mode == Some(IsolateMode::Vm) {
+        run_options.reuse_vm = true;
+        // When reusing existing VM session, set vm_reuse_connect to connect
+        // via vsock instead of spawning new QEMU process.
+        if has_active_vm_session {
+            run_options.vm_reuse_connect = true;
+        }
+    }
 
     // If vm_keep_timeout is set, enable reuse_vm mode to keep the VM alive
     // after the command completes.
