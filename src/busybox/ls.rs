@@ -1168,16 +1168,14 @@ fn list_path(path: &Path, options: &LsOptions) -> Result<()> {
     let metadata = fs::metadata(path)
         .map_err(|e| eyre!("ls: {}: {}", path.display(), e))?;
 
-    if options.directory || metadata.is_file() {
-        // List the file/directory itself (with -d flag or if it's a file)
+    if options.directory || !metadata.is_dir() {
+        // List the file/directory itself (with -d flag or if it's not a directory)
         let entry = file_entry_for_path(path, metadata)?;
         print_single_entry(&entry, options)?;
         Ok(())
-    } else if metadata.is_dir() {
+    } else {
         // List directory contents
         list_directory(path, options, "")
-    } else {
-        Err(eyre!("ls: {}: Not a directory", path.display()))
     }
 }
 
