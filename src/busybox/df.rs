@@ -477,8 +477,10 @@ fn df_resolve_mounts(options: &DfOptions) -> Result<Vec<(String, String, String)
         for (device, mount_point, fs_type) in &all_mounts {
             #[cfg(unix)]
             if fs == device || fs == mount_point || path.starts_with(mount_point) {
-                found = Some((device.clone(), mount_point.clone(), fs_type.clone()));
-                break;
+                // Choose the longest (most specific) matching mount point
+                if found.as_ref().map(|(_, mp, _): &(_, String, _)| mp.len() < mount_point.len()).unwrap_or(true) {
+                    found = Some((device.clone(), mount_point.clone(), fs_type.clone()));
+                }
             }
             #[cfg(windows)]
             {
@@ -523,7 +525,7 @@ fn print_df_table_header(options: &DfOptions, display_block_size: u64) {
             print!("Type          ");
         }
         print!(
-            "{}%-blocks   Used Available Capacity Mounted on\n",
+            "{}-blocks   Used Available Capacity Mounted on\n",
             if display_block_size == 1 {
                 String::new()
             } else {
@@ -542,7 +544,7 @@ fn print_df_table_header(options: &DfOptions, display_block_size: u64) {
             print!("   Inodes      IUsed    IFree IUse% ");
         } else {
             print!(
-                "{}%-blocks      Used Available Use% ",
+                "{}-blocks      Used Available Use% ",
                 if options.posix_format {
                     String::new()
                 } else {
