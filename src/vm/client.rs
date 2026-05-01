@@ -486,6 +486,28 @@ fn build_extended_command_request(
     serde_json::Value::Object(m)
 }
 
+/// Send command to VM via vsock (after guest is ready).
+pub fn send_command_via_vsock_simple(
+    cmd_parts: &[String],
+    io_mode: IoMode,
+    cid: u32,
+    cmd_port: u32,
+    reuse_session: bool,
+    vm_keep_timeout_secs: Option<u32>,
+    user: Option<&str>,
+) -> Result<i32> {
+    send_command_via_vsock_impl(
+        cmd_parts,
+        io_mode,
+        cid,
+        cmd_port,
+        None,
+        reuse_session,
+        vm_keep_timeout_secs,
+        user,
+    )
+}
+
 fn send_command_via_vsock_impl(
     cmd_parts: &[String],
     io_mode: IoMode,
@@ -537,6 +559,119 @@ fn send_command_via_vsock_impl(
     }
 }
 
+/// Wait for guest to signal readiness (ready port connection), then return.
+/// Does NOT send command - caller should register session then send command separately.
+pub fn wait_for_guest_ready(
+    _cid: u32,
+    mut qemu_child: Option<&mut std::process::Child>,
+    qemu_stderr_path: Option<&std::path::Path>,
+) -> Result<()> {
+    const READY_PORT: u32 = 10001;
+    log::debug!("vm_client: creating AF_VSOCK listener on ready port {}", READY_PORT);
+
+    use std::os::fd::IntoRawFd;
+
+    let ready_fd = socket::socket(
+        AddressFamily::Vsock,
+        SockType::Stream,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    ).map_err(|e| eyre::eyre!("Failed to create ready vsock socket: {}", e))?;
+
+    let ready_addr = VsockAddr::new(libc::VMADDR_CID_ANY, READY_PORT);
+    let raw_fd = ready_fd.into_raw_fd();
+    socket::bind(raw_fd, &ready_addr)
+        .map_err(|e| eyre::eyre!("Failed to bind ready vsock port: {}", e))?;
+    socket::listen(unsafe { &std::os::fd::BorrowedFd::borrow_raw(raw_fd) }, socket::Backlog::new(1)?)
+        .map_err(|e| eyre::eyre!("Failed to listen on ready vsock port: {}", e))?;
+
+    log::debug!("vm_client: waiting for guest to connect to ready port {}...", READY_PORT);
+
+    let poll_timeout_ms = 100;
+    let max_wait_ms = 60000;
+    let mut total_waited_ms = 0;
+
+    let client_fd = loop {
+        if let Some(ref mut child) = qemu_child {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let error_msg = if let Some(stderr_path) = qemu_stderr_path {
+                        std::fs::read_to_string(stderr_path).unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    let exit_info = status.code()
+                        .map(|c| format!("exit code {}", c))
+                        .unwrap_or_else(|| "killed by signal".to_string());
+
+                    let key_error = error_msg.lines()
+                        .find(|line| line.contains("error") || line.contains("failed") || line.contains("unable to"))
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_else(|| error_msg.lines().last().map(|s| s.trim().to_string()).unwrap_or_default());
+
+                    return Err(eyre::eyre!(
+                        "QEMU exited prematurely ({}): {}\n\
+                         If vsock CID conflict, kill existing VM processes: pkill -f qemu-system\n\
+                         Log: {}",
+                        exit_info,
+                        key_error,
+                        qemu_stderr_path.map(|p| p.display().to_string()).unwrap_or_default()
+                    ));
+                }
+                Ok(None) => {} // still running
+                Err(e) => {
+                    log::debug!("Failed to check QEMU status: {}", e);
+                }
+            }
+        }
+
+        let mut pfd = [libc::pollfd {
+            fd: raw_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+
+        let poll_result = unsafe { libc::poll(&mut pfd[0] as *mut libc::pollfd, 1, poll_timeout_ms as i32) };
+        total_waited_ms += poll_timeout_ms;
+
+        if total_waited_ms >= max_wait_ms {
+            return Err(eyre::eyre!("Timeout waiting for guest ready signal ({}s)", max_wait_ms / 1000));
+        }
+
+        match poll_result {
+            -1 => {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                return Err(eyre::eyre!("Poll error: {}", err));
+            }
+            0 => {
+                continue;
+            }
+            n if n > 0 => {
+                if (pfd[0].revents & libc::POLLIN) != 0 {
+                    break socket::accept(raw_fd)
+                        .map_err(|e| eyre::eyre!("Failed to accept on ready vsock port: {}", e))?;
+                }
+                if (pfd[0].revents & (libc::POLLERR | libc::POLLHUP)) != 0 {
+                    return Err(eyre::eyre!("Ready socket error during poll"));
+                }
+            }
+            _ => {
+                continue;
+            }
+        }
+    };
+
+    log::debug!("vm_client: guest connected to ready vsock port, guest is ready!");
+
+    let _ = nix::unistd::close(client_fd);
+    let _ = nix::unistd::close(raw_fd);
+
+    Ok(())
+}
+
 /// Wait for guest to signal readiness, then send command via vsock.
 ///
 /// This implements the "ready notification" pattern from boxlite:
@@ -579,6 +714,8 @@ pub fn wait_ready_and_send_command(
 }
 
 /// Extended version with QEMU process monitoring for early failure detection.
+/// If register_session_callback is Some, it's called after guest ready (before sending command).
+#[allow(dead_code)]
 pub fn wait_ready_and_send_command_with_qemu(
     cmd_parts: &[String],
     io_mode: IoMode,
@@ -591,7 +728,11 @@ pub fn wait_ready_and_send_command_with_qemu(
     qemu_child: &mut std::process::Child,
     qemu_stderr_path: &std::path::Path,
 ) -> Result<i32> {
-    wait_ready_and_send_command_impl(
+    // First wait for guest ready
+    wait_for_guest_ready(cid, Some(qemu_child), Some(qemu_stderr_path))?;
+
+    // Now send command
+    send_command_via_vsock_impl(
         cmd_parts,
         io_mode,
         cid,
@@ -600,8 +741,6 @@ pub fn wait_ready_and_send_command_with_qemu(
         reuse_session,
         vm_keep_timeout_secs,
         user,
-        Some(qemu_child),
-        Some(qemu_stderr_path),
     )
 }
 

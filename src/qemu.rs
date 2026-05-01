@@ -818,7 +818,10 @@ fn handle_guest_execution(
     guest_cid: u32,
     cmd_parts: &[String],
     io_mode: crate::models::IoMode,
+    env_root: &Path,
     qemu_log_path: &std::path::Path,
+    vm_cpus: u8,
+    vm_memory_mb: u32,
     vm_keep_timeout: Option<u32>,
     user: Option<&str>,
     vm_daemon: bool,
@@ -830,20 +833,37 @@ fn handle_guest_execution(
         let qemu_stderr_path = qemu_log_path.with_extension("stderr.log");
         let reuse_session = vm_keep_timeout.is_some();
 
-        match client::wait_ready_and_send_command_with_qemu(
+        // First wait for guest ready, then register session
+        client::wait_for_guest_ready(guest_cid, Some(qemu_child), Some(&qemu_stderr_path))?;
+        log::info!("qemu: guest is ready, registering session");
+
+        // Register session file AFTER guest is ready (before sending command)
+        // This ensures subsequent commands can connect to a working VM
+        let env_name = &crate::models::config().common.env_name;
+        let socket_path = std::path::PathBuf::from(format!("vsock:{}", guest_cid));
+        let daemon_pid = std::process::id();
+        let config = crate::vm::VmConfig {
+            timeout: vm_keep_timeout.unwrap_or(0),
+            extend: 10,
+            cpus: vm_cpus as u32,
+            memory_mib: vm_memory_mb,
+            backend: "qemu".to_string(),
+        };
+        crate::vm::register_vm_session(env_root, env_name, &socket_path, "qemu", &config, daemon_pid)?;
+        log::info!("qemu: registered VM session for {} (CID={}, PID={})", env_name, guest_cid, daemon_pid);
+
+        // Now send command
+        match client::send_command_via_vsock_simple(
             cmd_parts,
             io_mode,
             guest_cid,
             10000,
-            None,
             reuse_session,
             vm_keep_timeout,
             user,
-            qemu_child,
-            &qemu_stderr_path,
         ) {
             Ok(_cmd_exit_code) => {
-                log::info!("qemu: daemon mode - dummy command returned, VM is ready");
+                log::info!("qemu: daemon mode - dummy command returned");
 
                 // Signal parent via pipe that VM is ready.
                 //
@@ -899,23 +919,42 @@ fn handle_guest_execution(
     }
 
     if use_vsock {
-        // Vsock control plane: wait for guest ready, then connect to command port.
+        // Vsock control plane: wait for guest ready, register session, then send command.
         // QEMU uses AF_VSOCK, so pass None for unix_socket_path.
         // The ready notification uses AF_VSOCK port 10001.
         // `vm_keep_timeout: Some(_)` enables reuse_session + idle window for `epkg run --reuse`.
         let qemu_stderr_path = qemu_log_path.with_extension("stderr.log");
         let reuse_session = vm_keep_timeout.is_some();
-        match client::wait_ready_and_send_command_with_qemu(
+
+        // First wait for guest ready
+        client::wait_for_guest_ready(guest_cid, Some(qemu_child), Some(&qemu_stderr_path))?;
+        log::info!("qemu: guest is ready");
+
+        // Register session if vm_keep_timeout is set (VM will continue running after command)
+        if vm_keep_timeout.is_some() {
+            let env_name = &crate::models::config().common.env_name;
+            let socket_path = std::path::PathBuf::from(format!("vsock:{}", guest_cid));
+            let daemon_pid = std::process::id();
+            let config = crate::vm::VmConfig {
+                timeout: vm_keep_timeout.unwrap_or(0),
+                extend: 10,
+                cpus: vm_cpus as u32,
+                memory_mib: vm_memory_mb,
+                backend: "qemu".to_string(),
+            };
+            crate::vm::register_vm_session(env_root, env_name, &socket_path, "qemu", &config, daemon_pid)?;
+            log::info!("qemu: registered VM session for {} (CID={}, PID={})", env_name, guest_cid, daemon_pid);
+        }
+
+        // Now send command
+        match client::send_command_via_vsock_simple(
             cmd_parts,
             io_mode,
             guest_cid,
             10000,
-            None,
             reuse_session,
             vm_keep_timeout,
             user,
-            qemu_child,
-            &qemu_stderr_path,
         ) {
             Ok(cmd_exit_code) => {
                 log::debug!("qemu: command completed with exit code {}, waiting for QEMU to exit", cmd_exit_code);
@@ -1079,21 +1118,6 @@ pub fn run_command_in_qemu(
     let guest_cid = generate_vsock_cid();
     log::info!("qemu: generated vsock CID {} for VM", guest_cid);
 
-    // Register session file for cross-process VM discovery
-    // This allows other processes to reuse this VM via vm_reuse_connect
-    let env_name = &crate::models::config().common.env_name;
-    let socket_path = std::path::PathBuf::from(format!("vsock:{}", guest_cid));
-    let daemon_pid = std::process::id();
-    let config = crate::vm::VmConfig {
-        timeout: run_options.vm_keep_timeout.map(|t| t).unwrap_or(0),
-        extend: 10,
-        cpus: vm_cpus as u32,
-        memory_mib: vm_memory_mb,
-        backend: "qemu".to_string(),
-    };
-    crate::vm::register_vm_session(env_root, env_name, &socket_path, "qemu", &config, daemon_pid)?;
-    log::info!("qemu: registered VM session for {} (CID={}, PID={})", env_name, guest_cid, daemon_pid);
-
     let init_cmd_append = if use_cmdline_mode { Some(init_cmd.as_str()) } else { None };
     let init_user_append = if use_cmdline_mode { run_options.user.as_deref() } else { None };
 
@@ -1128,7 +1152,10 @@ pub fn run_command_in_qemu(
         guest_cid,
         &cmd_parts,
         run_options.io_mode,
+        env_root,
         &setup.qemu_log_path,
+        vm_cpus,
+        vm_memory_mb,
         run_options.vm_keep_timeout,
         run_options.user.as_deref(),
         run_options.vm_daemon,
