@@ -552,12 +552,8 @@ fn print_df_table_header(options: &DfOptions, display_block_size: u64) {
             print!("   Inodes      IUsed    IFree IUse% ");
         } else {
             print!(
-                "{}-blocks      Used Available Use% ",
-                if options.posix_format {
-                    String::new()
-                } else {
-                    format_block_size_label(display_block_size)
-                }
+                " {}-blocks      Used Available Use% ",
+                format_block_size_label(display_block_size)
             );
         }
 
