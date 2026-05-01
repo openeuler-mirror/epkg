@@ -468,7 +468,11 @@ fn df_resolve_mounts(options: &DfOptions) -> Result<Vec<(String, String, String)
     let mut filtered = Vec::new();
 
     for fs in &options.filesystems {
-        let path = Path::new(fs);
+        let path = if Path::new(fs).is_absolute() {
+            Path::new(fs).to_path_buf()
+        } else {
+            env::current_dir()?.join(fs)
+        };
         let mut found = None;
         for (device, mount_point, fs_type) in &all_mounts {
             #[cfg(unix)]
