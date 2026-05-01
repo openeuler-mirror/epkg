@@ -60,7 +60,7 @@ fi
 # VM mode: virtiofs doesn't support poll, Go build fails
 # Skip build test, just verify go version works
 if _is_vm_mode; then
-    log "Skipping go build test in VM mode (virtiofs poll not supported)"
+    echo "[${OS}/${LANG_NAME}] Skipping go build test in VM mode (virtiofs poll not supported)"
     lang_ok
     exit 0
 fi
