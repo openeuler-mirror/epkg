@@ -1721,11 +1721,20 @@ fn apply_env_config_from_path(env_root_or_etc: &Path, config: &mut EPKGConfig) -
     // Only set in_env_root when we're inside the env (loading from /etc/epkg/env.yaml).
     // With -r PATH we're on the host; run must do namespace isolation so -r and -e are equivalent.
     config.common.in_env_root = env_root_or_etc == Path::new("/");
-    // Always use the real env_root from env.yaml. It is accessible in all modes:
-    // - Env mode (bind mounts): host filesystem visible directly
-    // - Fs mode (pivot_root): home_epkg bind-mounted before pivot_root (path consistency)
-    // - VM mode (virtiofs): home_epkg bind-mounted into env root before virtiofs share
-    config.common.env_root = env_config_data.env_root.clone();
+    // Determine env_root based on execution context:
+    // - Inside VM: the root filesystem IS the environment, so use "/"
+    // - On host: use the actual env_root path from env.yaml
+    #[cfg(target_os = "linux")]
+    if crate::busybox::is_inside_vm() {
+        log::debug!("apply_env_config_from_path: inside VM, using '/' as env_root");
+        config.common.env_root = "/".to_string();
+    } else {
+        config.common.env_root = env_config_data.env_root.clone();
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        config.common.env_root = env_config_data.env_root.clone();
+    }
     // Set ENV_CONFIG with the corrected env_root
     let env_config = models::EnvConfig {
         name:     env_config_data.name.clone(),
