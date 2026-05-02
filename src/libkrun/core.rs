@@ -1969,7 +1969,7 @@ pub fn run_command_in_krun(
         // Channel to signal VM start failure to avoid waiting 30s on error
         let (start_failed_tx, start_failed_rx) = std::sync::mpsc::channel();
         crate::debug_epkg!("starting VM thread...");
-        let vm_thread = start_libkrun_vm(vm_ctx.ctx, start_failed_tx);
+        let mut vm_thread = Some(start_libkrun_vm(vm_ctx.ctx, start_failed_tx));
 
         // On Windows, skip the ready notification mechanism - libkrun's vsock
         // implementation doesn't properly handle guest-to-host connects (listen=false).
@@ -1984,7 +1984,7 @@ pub fn run_command_in_krun(
                 // VM startup failed - wait for VM thread to finish and clean up context
                 log::error!("libkrun: VM startup failed: {}", e);
                 let _ = unsafe { krun_signal_shutdown(ctx_id) };
-                let _ = vm_thread.join();
+                let _ = vm_thread.take().unwrap().join();
                 let _ = unsafe { krun_free_ctx(ctx_id) };
                 return Err(e);
             }
@@ -2053,8 +2053,36 @@ pub fn run_command_in_krun(
             let env_name = &run_options.env_name;
             crate::vm::register_vm_session_simple(env_root, env_name, &vsock_sock_path)?;
 
+            #[cfg(not(target_os = "linux"))]
+            {
+                // Store session for reuse (same mechanism as reuse_vm)
+                *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
+                    ctx_id,
+                    vsock_sock_path,
+                    vm_thread: vm_thread.take().unwrap(),
+                    env_root: env_root.to_path_buf(),
+                    env_name: env_name.clone(),
+                    #[cfg(unix)]
+                    reverse_listener: None,
+                });
+                log::debug!("libkrun: VM daemon session kept alive");
+                return apply_krun_exit_policy(exit_code, run_options);
+            }
             #[cfg(target_os = "linux")]
             {
+                // On Linux, store the VM session so the child process keeps running
+                // and maintains the VM thread alive
+                *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
+                    ctx_id,
+                    vsock_sock_path: vsock_sock_path.clone(),
+                    vm_thread: vm_thread.take().unwrap(),
+                    env_root: env_root.to_path_buf(),
+                    env_name: env_name.clone(),
+                    #[cfg(unix)]
+                    reverse_listener: None,
+                });
+                log::debug!("libkrun: VM daemon session kept alive on Linux");
+
                 // Signal VM ready to parent via pipe (same as qemu backend)
                 if let Some(fd) = vm_daemon_ready_fd {
                     let signal = b"READY\n";
@@ -2070,38 +2098,21 @@ pub fn run_command_in_krun(
                         }
                     }
                 }
-            }
 
-            // Store session for reuse (same mechanism as reuse_vm)
-            #[cfg(not(target_os = "linux"))]
-            {
-                *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
-                    ctx_id,
-                    vsock_sock_path,
-                    vm_thread,
-                    env_root: env_root.to_path_buf(),
-                    env_name: env_name.clone(),
-                    #[cfg(unix)]
-                    reverse_listener: None,
-                });
-                log::debug!("libkrun: VM daemon session kept alive");
+                // Keep the child process running to maintain the VM thread alive
+                // The child process becomes the daemon supervisor
+                log::info!("libkrun: daemon mode - child process will keep VM alive");
+                // Park the main thread; VM thread continues running until shutdown
+                std::thread::park();
             }
-            #[cfg(target_os = "linux")]
-            {
-                // On Linux, namespace.rs handles cleanup; just return without shutdown
-                log::debug!("libkrun: VM daemon mode on Linux, returning without shutdown");
-            }
-            return apply_krun_exit_policy(exit_code, run_options);
-        }
-
-        if run_options.reuse_vm {
+        } else if run_options.reuse_vm {
             #[cfg(not(target_os = "linux"))]
             {
                 let env_name = crate::models::config().common.env_name.clone();
                 *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
                     ctx_id,
                     vsock_sock_path,
-                    vm_thread,
+                    vm_thread: vm_thread.take().unwrap(),
                     env_root: env_root.to_path_buf(),
                     env_name,
                     #[cfg(unix)]
@@ -2110,15 +2121,45 @@ pub fn run_command_in_krun(
                 log::debug!("libkrun: VM session kept alive for reuse (forward mode)");
                 return apply_krun_exit_policy(exit_code, run_options);
             }
+            #[cfg(target_os = "linux")]
+            {
+                // On Linux, reuse_vm keeps VM alive similar to vm_daemon
+                // Store VM_REUSE_SESSION and park to keep VM thread alive
+                let env_name = crate::models::config().common.env_name.clone();
+                *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
+                    ctx_id,
+                    vsock_sock_path,
+                    vm_thread: vm_thread.take().unwrap(),
+                    env_root: env_root.to_path_buf(),
+                    env_name,
+                    #[cfg(unix)]
+                    reverse_listener: None,
+                });
+                log::debug!("libkrun: VM session kept alive for reuse on Linux");
+                // Park to keep child process alive (VM thread continues running)
+                std::thread::park();
+            }
         }
 
         // For no_exit mode (e.g., scriptlets), shutdown VM and return instead of exiting process
+        #[cfg(not(target_os = "linux"))]
         if run_options.no_exit {
-            krun_vsock_shutdown_join_free(vm_thread, ctx_id);
+            krun_vsock_shutdown_join_free(vm_thread.take().unwrap(), ctx_id);
             return apply_krun_exit_policy(exit_code, run_options);
         }
 
-        krun_vsock_shutdown_join_free_exit(vm_thread, ctx_id, exit_code);
+        #[cfg(not(target_os = "linux"))]
+        krun_vsock_shutdown_join_free_exit(vm_thread.take().unwrap(), ctx_id, exit_code);
+
+        // On Linux, non-vm_daemon non-reuse_vm mode: normal shutdown
+        #[cfg(target_os = "linux")]
+        if !run_options.vm_daemon && !run_options.reuse_vm {
+            if run_options.no_exit {
+                krun_vsock_shutdown_join_free(vm_thread.take().unwrap(), ctx_id);
+                return apply_krun_exit_policy(exit_code, run_options);
+            }
+            krun_vsock_shutdown_join_free_exit(vm_thread.take().unwrap(), ctx_id, exit_code);
+        }
     }
 
     // No-vsock mode (EPKG_VM_NO_DAEMON set)
