@@ -48,7 +48,62 @@ pub fn build_vm_mount_policy(run_options: &crate::run::RunOptions) -> Vec<String
     #[cfg(target_os = "linux")]
     specs.extend(windows_drive_mount_specs());
 
+    // Epkg source directory (for development - mirrors.json access)
+    let epkg_src_path = crate::dirs::get_epkg_src_path();
+    if epkg_src_path.exists() {
+        specs.push(format!("{}:try", epkg_src_path.display()));
+    }
+
     specs
+}
+
+/// Build virtiofs mount specs from unified VM mount policy.
+///
+/// This function:
+/// 1. Gets mount policy via build_vm_mount_policy()
+/// 2. Resolves symlinks (canonicalize)
+/// 3. Filters out paths covered by existing mounts
+/// 4. Generates virtiofs tags
+/// 5. Returns (tag, host_path, guest_path, read_only) tuples
+///
+/// Used by libkrun and qemu on macOS/Windows.
+#[cfg(not(target_os = "linux"))]
+pub fn build_virtiofs_mounts(
+    env_root: &Path,
+    run_options: &crate::run::RunOptions,
+) -> Vec<(String, String, String, bool)> {
+    let resolved_specs = resolve_and_filter_mount_specs(
+        &build_vm_mount_policy(run_options),
+        env_root,
+    );
+
+    // Convert resolved specs to virtiofs mount tuples
+    resolved_specs
+        .into_iter()
+        .map(|(host_path, guest_path, read_only, _try_only)| {
+            let tag = generate_virtiofs_tag(&host_path);
+            let guest = guest_path.to_string_lossy().to_string();
+            (tag, host_path.to_string_lossy().to_string(), guest, read_only)
+        })
+        .collect()
+}
+
+/// Generate a unique virtiofs tag from a path.
+/// The tag is used as the mount point identifier in the guest VM.
+#[cfg(not(target_os = "linux"))]
+pub fn generate_virtiofs_tag(path: &Path) -> String {
+    // Use the last component of the path as the tag, or "root" if empty
+    let tag = path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("root");
+
+    // Make tag unique by using a simple hash of the full path
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    format!("{}_{}", tag, hash % 10000)
 }
 
 /// Resolve symlinks and filter out paths covered by existing mounts.

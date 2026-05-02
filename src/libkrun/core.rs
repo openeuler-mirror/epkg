@@ -646,7 +646,12 @@ fn build_libkrun_config(
 
     // Add virtiofs mount specs for guest init to mount
     // Format: epkg.vol_N=tag:guest_path[:ro]
-    let mount_specs = build_virtiofs_mount_specs(env_root, run_options);
+    #[cfg(target_os = "linux")]
+    let mount_specs: Vec<(String, String, String, bool)> = Vec::new();
+
+    #[cfg(not(target_os = "linux"))]
+    let mount_specs = crate::mount_specs::build_virtiofs_mounts(env_root, run_options);
+
     for (i, (tag, _host_path, guest_path, read_only)) in mount_specs.iter().enumerate() {
         let spec = if *read_only {
             format!("{}:{}:ro", tag, guest_path)
@@ -697,6 +702,12 @@ fn build_libkrun_config(
         log::debug!("libkrun: no kernel available (no --kernel specified and no default kernel found)");
     }
 
+    #[cfg(target_os = "linux")]
+    let virtiofs_mounts: Vec<(String, String, String, bool)> = Vec::new();
+
+    #[cfg(not(target_os = "linux"))]
+    let virtiofs_mounts = crate::mount_specs::build_virtiofs_mounts(env_root, run_options);
+
     Ok(LibkrunConfig {
         use_vsock,
         use_reverse_vsock,
@@ -704,123 +715,8 @@ fn build_libkrun_config(
         kernel_args,
         kernel_path,
         kernel_format,
-        virtiofs_mounts: build_virtiofs_mount_specs(env_root, run_options),
+        virtiofs_mounts,
     })
-}
-
-/// Build virtiofs mount specs for VM guest.
-/// Returns Vec<(tag, host_path, guest_path, read_only)> for each directory mount.
-/// Skips non-directory sources since virtiofs only supports directory bind mounts.
-///
-/// # VM Virtiofs Mount Architecture
-///
-/// ## Path Consistency Rule
-/// Per docs/zh/architecture/env-path.md, guest paths should match host paths.
-/// This ensures:
-/// - Config file paths (env.yaml) are valid in VM guest
-/// - Disk space checks work correctly via virtiofs
-/// - Nested epkg can resolve paths from env.yaml
-///
-/// ## Mount Strategy
-/// All mounts are rw since permission control is done by host kernel (virtiofs passthrough).
-/// We mount directories in order and skip any that are already covered by a previous mount.
-///
-/// ## Mount Order (for Linux/macOS)
-/// 1. User-provided mount specs (highest priority)
-/// 2. home_epkg - core user config/store, always mounted
-/// 3. opt_epkg - if shared_store mode
-/// 4. epkg_store - only if standalone (symlink to dir outside home_epkg/opt_epkg)
-/// 5. home_cache - only if standalone (symlink to dir outside home_epkg/opt_epkg)
-/// 6. cwd - current working directory
-/// 7. epkg binary directory
-/// 8. epkg source directory (for mirrors.json)
-/// 9. /lib/modules
-///
-/// ## Directory Containment Detection
-/// We track canonical paths of mounted directories and skip mounting a path
-/// if its canonical form is inside an already-mounted canonical path.
-/// This handles both:
-/// - Explicit directory containment (B is subdirectory of A)
-/// - Symlink containment (home_epkg is symlink to /some/dir, store is inside /some/dir)
-#[cfg(feature = "libkrun")]
-#[allow(unused_variables)]  // env_root, run_options unused on Linux but used on macOS/Windows
-fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<(String, String, String, bool)> {
-    // On Linux, namespace.rs performs all necessary bind mounts before VM start,
-    // then krun_set_root(env_root) shares entire env_root via single virtiofs.
-    // Guest accesses all directories naturally through root virtiofs.
-    // NO additional virtiofs mounts needed.
-    //
-    // On macOS/Windows, no namespace/bind mounts, so multiple virtiofs needed.
-    #[cfg(target_os = "linux")]
-    {
-        log::debug!("libkrun: Linux mode - all paths accessible via root virtiofs (bind mounted by namespace.rs)");
-        Vec::new()
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        // Get unified mount policy from cross-platform mount_specs module
-        // This resolves symlinks and filters out paths covered by existing mounts
-        let resolved_specs = crate::mount_specs::resolve_and_filter_mount_specs(
-            &crate::mount_specs::build_vm_mount_policy(run_options),
-            env_root,
-        );
-
-        // Convert resolved specs to virtiofs mounts
-        let mounts: Vec<(String, String, String, bool)> = resolved_specs
-            .into_iter()
-            .map(|(host_path, guest_path, read_only, try_only)| {
-                let tag = generate_virtiofs_tag(&host_path);
-                let guest = guest_path.to_string_lossy().to_string();
-                log::debug!("libkrun: adding virtiofs mount: {} -> {} (guest: {}) ({})",
-                           host_path.display(), tag, guest, if read_only { "ro" } else { "rw" });
-                (tag, host_path.to_string_lossy().to_string(), guest, read_only)
-            })
-            .collect();
-
-        // Add epkg source directory (extra, not in policy - only for development)
-        use std::fs;
-        let epkg_src_path = crate::dirs::get_epkg_src_path();
-        if epkg_src_path.exists() {
-            match fs::canonicalize(&epkg_src_path) {
-                Ok(resolved_src) => {
-                    let tag = generate_virtiofs_tag(&resolved_src);
-                    let guest = resolved_src.to_string_lossy().to_string();
-                    log::debug!("libkrun: adding epkg src virtiofs mount: {} -> {} (guest: {})",
-                               resolved_src.display(), tag, guest);
-                    // Create mutable mounts and push
-                    let mut mounts = mounts;
-                    mounts.push((tag, resolved_src.to_string_lossy().to_string(), guest, false));
-                    mounts
-                }
-                Err(e) => {
-                    log::debug!("libkrun: could not resolve epkg src path {}: {}", epkg_src_path.display(), e);
-                    mounts
-                }
-            }
-        } else {
-            mounts
-        }
-    }
-}
-
-/// Parse a mount spec string for virtiofs.
-/// Generate a unique virtiofs tag from a path.
-/// The tag is used as the mount point identifier in the guest.
-#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
-fn generate_virtiofs_tag(path: &Path) -> String {
-    // Use the last component of the path as the tag, or the full path if root
-    let tag = path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("root");
-
-    // Make tag unique by using a simple hash of the full path
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut hasher);
-    let hash = hasher.finish();
-
-    format!("{}_{}", tag, hash % 10000)
 }
 
 /// Convert a Windows path to a valid Linux guest path for virtiofs mounts.
