@@ -16,32 +16,8 @@ use crate::run::RunOptions;
 #[cfg(feature = "libkrun")]
 use crate::vm::{
     discover_vm_session, register_vm_session_simple,
-    unregister_vm_session, is_vm_session_active, vm_socket_path_for_env,
+    unregister_vm_session, vm_socket_path_for_env,
 };
-
-/// Check if there's an active VM reuse session for a specific env_root.
-/// Returns true if there's an active VM session for the same environment.
-/// This is a helper function for scriptlets/hooks to check if they should inherit VM settings.
-///
-/// Checks both:
-/// 1. In-memory session (fast path for same-process)
-/// 2. On-disk session file (cross-process discovery)
-#[cfg(feature = "libkrun")]
-pub fn is_vm_reuse_active_for_env(env_root: &Path) -> bool {
-    // Fast path: check in-memory session first
-    {
-        let guard = VM_REUSE_SESSION.lock().unwrap();
-        if let Some(session) = guard.as_ref() {
-            if session.env_root == env_root {
-                return true;
-            }
-        }
-    }
-
-    // Cross-process: check on-disk session file
-    let env_name = &crate::models::config().common.env_name;
-    is_vm_session_active(env_name)
-}
 
 /// Connect to an existing VM session for the given env_root.
 /// Returns a connected stream and session info if successful, None if no session exists.
@@ -122,8 +98,8 @@ fn connect_to_existing_vm_socket(_env_root: &Path) -> Result<Option<(std::fs::Fi
 /// Execute a command via an existing VM session.
 /// Used by install/upgrade/remove to run operations in the guest.
 ///
-/// When a VM session exists (started via `epkg vm start`), we automatically
-/// set reuse_vm=true and use the session's configured timeout to keep the VM alive.
+/// When a VM session exists (started via `epkg vm start`), we use the session's
+/// configured timeout for VM lifecycle.
 #[cfg(all(feature = "libkrun", unix))]
 pub fn execute_via_existing_vm(
     env_root: &Path,
@@ -132,7 +108,6 @@ pub fn execute_via_existing_vm(
     env_vars: Option<&std::collections::HashMap<String, String>>,
     cwd: Option<&str>,
     stdin: Option<&[u8]>,
-    _reuse_vm: bool,
 ) -> Result<Option<i32>> {
     let (stream, session_info) = match connect_to_existing_vm_socket(env_root)? {
         Some(s) => s,
@@ -141,17 +116,13 @@ pub fn execute_via_existing_vm(
 
     log::info!("libkrun: executing command via existing VM: {:?}", cmd_parts);
 
-    // For existing VM sessions (daemon mode), always use reuse_vm=true
-    // and pass the session's configured timeout to keep the VM alive.
-    // Per guest_daemon.rs:1713-1716: timeout=0 means "never timeout"
-    // Pass Some(0) to guest, NOT None (which triggers default 30s timeout)
-    let reuse_vm = true;
-    let vm_keep_timeout_secs = Some(session_info.config.timeout);
+    // For existing VM sessions, pass the session's configured timeout.
+    // None: immediate shutdown, Some(0): never timeout, Some(N): idle N seconds
+    let vm_keep_timeout_secs = session_info.config.timeout;
 
     let exit_code = super::stream::send_command_over_stream(
         cmd_parts,
         io_mode,
-        reuse_vm,
         vm_keep_timeout_secs,
         None,  // extend_timeout_secs
         env_vars,
@@ -166,8 +137,8 @@ pub fn execute_via_existing_vm(
 /// Execute a command via an existing VM session (Windows version).
 /// Uses named pipes instead of Unix sockets.
 ///
-/// When a VM session exists (started via `epkg vm start`), we automatically
-/// set reuse_vm=true and use the session's configured timeout to keep the VM alive.
+/// When a VM session exists (started via `epkg vm start`), we use the session's
+/// configured timeout for VM lifecycle.
 #[cfg(all(feature = "libkrun", windows))]
 pub fn execute_via_existing_vm(
     env_root: &Path,
@@ -176,7 +147,6 @@ pub fn execute_via_existing_vm(
     env_vars: Option<&std::collections::HashMap<String, String>>,
     cwd: Option<&str>,
     stdin: Option<&[u8]>,
-    _reuse_vm: bool,
 ) -> Result<Option<i32>> {
     let (stream, session_info) = match connect_to_existing_vm_socket(env_root)? {
         Some(s) => s,
@@ -185,17 +155,13 @@ pub fn execute_via_existing_vm(
 
     log::info!("libkrun: executing command via existing VM: {:?}", cmd_parts);
 
-    // For existing VM sessions (daemon mode), always use reuse_vm=true
-    // and pass the session's configured timeout to keep the VM alive.
-    // Per guest_daemon.rs:1713-1716: timeout=0 means "never timeout"
-    // Pass Some(0) to guest, NOT None (which triggers default 30s timeout)
-    let reuse_vm = true;
-    let vm_keep_timeout_secs = Some(session_info.config.timeout);
+    // For existing VM sessions, pass the session's configured timeout.
+    // None: immediate shutdown, Some(0): never timeout, Some(N): idle N seconds
+    let vm_keep_timeout_secs = session_info.config.timeout;
 
     let exit_code = super::stream::send_command_over_named_pipe(
         cmd_parts,
         io_mode,
-        reuse_vm,
         vm_keep_timeout_secs,
         None,  // extend_timeout_secs
         env_vars,
@@ -463,7 +429,7 @@ fn build_libkrun_config(
     // - If existing session: use forward mode (Host connects to Guest)
     // - If no existing session: use reverse mode for first command, then switch to forward
     #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
-    let has_existing_session = if run_options.reuse_vm {
+    let has_existing_session = if run_options.vm_keep_timeout.is_some() {
         VM_REUSE_SESSION.lock().unwrap().is_some()
     } else {
         false
@@ -1401,11 +1367,10 @@ fn try_reuse_existing_krun_session(
                     log::debug!("libkrun: Guest reconnected, sending command...");
                     let cwd_str;
                     let cwd = if run_options.chdir_to_env_root { Some("/") } else { cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()); cwd_str.as_deref() };
-                    let stdin_data = run_options.stdin.as_ref().map(|v| v.as_slice());
+                    let stdin_data = run_options.stdin.as_deref();
                     match super::stream::send_command_over_stream(
                         &config.cmd_parts,
                         run_options.io_mode,
-                        run_options.reuse_vm,
                         run_options.vm_keep_timeout,
                         None,  // extend_timeout_secs
                         Some(&run_options.env_vars),
@@ -1450,11 +1415,10 @@ fn try_reuse_existing_krun_session(
         // Forward mode: Host connects to Guest
         let cwd_str;
         let cwd = if run_options.chdir_to_env_root { Some("/") } else { cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()); cwd_str.as_deref() };
-        let stdin_data = run_options.stdin.as_ref().map(|v| v.as_slice());
+        let stdin_data = run_options.stdin.as_deref();
         match super::stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.io_mode,
-            run_options.reuse_vm,
             run_options.vm_keep_timeout,
             None,  // extend_timeout_secs
             &sock,
@@ -1488,9 +1452,8 @@ fn send_session_done_unix(sock_path: &Path) -> Result<()> {
     let req = serde_json::to_vec(&super::stream::build_command_request(
         &[crate::run::VM_SESSION_DONE_CMD.to_string()],
         crate::models::IoMode::Stream,
-        false,
-        None,
-        None,
+        None,  // vm_keep_timeout - session done triggers shutdown
+        None,  // extend_timeout_secs
         None,
         None, // cwd - session done doesn't need working directory
         None, // stdin - session done doesn't need stdin
@@ -1775,12 +1738,12 @@ fn run_reverse_vsock_mode_inner(
     };
 
     // Register session file IMMEDIATELY after Guest connects for cross-process discovery.
-    // This allows other processes to discover the VM while the first command is running.
-    if run_options.reuse_vm {
-        let _ = register_vm_session_simple(env_root, &env_name, &vsock_sock_path);
-        log::info!("vm_session: registered VM session for {} (socket {})",
-                   env_root.display(), vsock_sock_path.display());
-    }
+    // This allows other processes to discover the VM while the command is running.
+    // ALWAYS register (even for transient VMs) to handle concurrent process discovery.
+    // Stale session cleanup happens when connection fails.
+    let _ = register_vm_session_simple(env_root, &env_name, &vsock_sock_path);
+    log::info!("vm_session: registered VM session for {} (socket {})",
+               env_root.display(), vsock_sock_path.display());
 
     crate::debug_epkg!("[PERF] Guest connected, sending command...");
     let cmd_start = std::time::Instant::now();
@@ -1788,7 +1751,7 @@ fn run_reverse_vsock_mode_inner(
     // Determine working directory for VM
     let cwd_str;
     let cwd = if run_options.chdir_to_env_root { Some("/") } else { cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()); cwd_str.as_deref() };
-    let stdin_data = run_options.stdin.as_ref().map(|v| v.as_slice());
+    let stdin_data = run_options.stdin.as_deref();
 
     // Send command over the accepted connection
     // On Windows, use the named-pipe-specific function that calls FlushFileBuffers
@@ -1796,7 +1759,7 @@ fn run_reverse_vsock_mode_inner(
     let exit_code = match super::stream::send_command_over_named_pipe(
         &config.cmd_parts,
         run_options.io_mode,
-        run_options.reuse_vm,
+        run_options.vm_keep_timeout.is_some(),
         run_options.vm_keep_timeout,
         None,  // extend_timeout_secs
         Some(&run_options.env_vars),
@@ -1818,7 +1781,7 @@ fn run_reverse_vsock_mode_inner(
     let exit_code = match super::stream::send_command_over_stream(
         &config.cmd_parts,
         run_options.io_mode,
-        run_options.reuse_vm,
+        run_options.vm_keep_timeout.is_some(),
         run_options.vm_keep_timeout,
         None,  // extend_timeout_secs
         Some(&run_options.env_vars),
@@ -1839,7 +1802,7 @@ fn run_reverse_vsock_mode_inner(
 
     log::debug!("libkrun: reverse vsock command completed with exit code {}", exit_code);
 
-    if run_options.reuse_vm {
+    if run_options.vm_keep_timeout.is_some() {
         // Switch to forward mode for reuse: Guest becomes listener, Host connects.
         // This allows cross-process VM reuse - any host process can connect to the socket.
         // The socket path is predictable (env_hash-based) and stored in session file.
@@ -1933,11 +1896,10 @@ pub fn run_command_in_krun(
         log::info!("libkrun: NOT using reverse mode, use_reverse_vsock={}", config.use_reverse_vsock);
 
         // Forward mode: Host connects to Guest (reuse or Unix platforms)
-        if run_options.reuse_vm {
-            if let Some(code) = try_reuse_existing_krun_session(env_root, &config, run_options)? {
-                log::info!("libkrun: reused VM session, exit code {}", code);
-                return apply_krun_exit_policy(code, run_options);
-            }
+        // ALWAYS try to reuse existing session - "能reuse就必须reuse"
+        if let Some(code) = try_reuse_existing_krun_session(env_root, &config, run_options)? {
+            log::info!("libkrun: reused VM session, exit code {}", code);
+            return apply_krun_exit_policy(code, run_options);
         }
 
         crate::debug_epkg!("creating and configuring VM...");
@@ -2017,13 +1979,12 @@ pub fn run_command_in_krun(
         crate::debug_epkg!("libkrun: guest is ready");
 
         // Register session IMMEDIATELY after Guest is ready (before sending command).
-        // This allows other processes to discover the VM while the first command is running.
-        if run_options.reuse_vm {
-            let env_name = &crate::models::config().common.env_name;
-            let _ = register_vm_session_simple(env_root, env_name, &vsock_sock_path);
-            log::info!("vm_session: registered VM session for {} (socket {})",
-                       env_root.display(), vsock_sock_path.display());
-        }
+        // ALWAYS register for cross-process discovery. Other processes may try to connect concurrently.
+        // Stale session cleanup happens when connection fails.
+        let env_name = &crate::models::config().common.env_name;
+        let _ = register_vm_session_simple(env_root, env_name, &vsock_sock_path);
+        log::info!("vm_session: registered VM session for {} (socket {})",
+                   env_root.display(), vsock_sock_path.display());
 
         // Guest is ready - proceed directly to send command.
         // The ready signal confirms guest vm_daemon is running and waiting.
@@ -2031,11 +1992,10 @@ pub fn run_command_in_krun(
         crate::debug_epkg!("libkrun: sending command via vsock...");
         let cwd_str;
         let cwd = if run_options.chdir_to_env_root { Some("/") } else { cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()); cwd_str.as_deref() };
-        let stdin_data = run_options.stdin.as_ref().map(|v| v.as_slice());
+        let stdin_data = run_options.stdin.as_deref();
         let exit_code = super::stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.io_mode,
-            run_options.reuse_vm,
             run_options.vm_keep_timeout,
             None,  // extend_timeout_secs
             &vsock_sock_path,
@@ -2105,39 +2065,31 @@ pub fn run_command_in_krun(
                 // Park the main thread; VM thread continues running until shutdown
                 std::thread::park();
             }
-        } else if run_options.reuse_vm {
+        } else if run_options.vm_keep_timeout.is_some() {
+            // Keep VM alive for reuse (non-daemon mode with vm_keep_timeout)
             #[cfg(not(target_os = "linux"))]
             {
-                let env_name = crate::models::config().common.env_name.clone();
+                // macOS/Windows: store session and keep VM alive in process
+                let env_name = &run_options.env_name;
+                crate::vm::register_vm_session_simple(env_root, env_name, &vsock_sock_path)?;
                 *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
                     ctx_id,
                     vsock_sock_path,
                     vm_thread: vm_thread.take().unwrap(),
                     env_root: env_root.to_path_buf(),
-                    env_name,
+                    env_name: env_name.clone(),
                     #[cfg(unix)]
-                    reverse_listener: None,  // Forward mode: no reverse listener
+                    reverse_listener: None,
                 });
                 log::debug!("libkrun: VM session kept alive for reuse (forward mode)");
                 return apply_krun_exit_policy(exit_code, run_options);
             }
             #[cfg(target_os = "linux")]
             {
-                // On Linux, reuse_vm keeps VM alive similar to vm_daemon
-                // Store VM_REUSE_SESSION and park to keep VM thread alive
-                let env_name = crate::models::config().common.env_name.clone();
-                *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
-                    ctx_id,
-                    vsock_sock_path,
-                    vm_thread: vm_thread.take().unwrap(),
-                    env_root: env_root.to_path_buf(),
-                    env_name,
-                    #[cfg(unix)]
-                    reverse_listener: None,
-                });
-                log::debug!("libkrun: VM session kept alive for reuse on Linux");
-                // Park to keep child process alive (VM thread continues running)
-                std::thread::park();
+                // On Linux, guest daemon handles idle timeout.
+                // Session file already registered earlier.
+                // Host process can exit - guest daemon will wait for vm_keep_timeout.
+                log::debug!("libkrun: vm_keep_timeout mode on Linux - host exits, guest handles idle timeout");
             }
         }
 
@@ -2151,9 +2103,9 @@ pub fn run_command_in_krun(
         #[cfg(not(target_os = "linux"))]
         krun_vsock_shutdown_join_free_exit(vm_thread.take().unwrap(), ctx_id, exit_code);
 
-        // On Linux, non-vm_daemon non-reuse_vm mode: normal shutdown
+        // On Linux, shutdown VM unless vm_daemon mode (which parks forever)
         #[cfg(target_os = "linux")]
-        if !run_options.vm_daemon && !run_options.reuse_vm {
+        if !run_options.vm_daemon {
             if run_options.no_exit {
                 krun_vsock_shutdown_join_free(vm_thread.take().unwrap(), ctx_id);
                 return apply_krun_exit_policy(exit_code, run_options);

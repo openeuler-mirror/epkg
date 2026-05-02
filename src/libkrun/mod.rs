@@ -114,11 +114,6 @@ pub fn set_socket_buffer_size(fd: libc::c_int) {
 // Public API (All Platforms)
 // ============================================================================
 
-/// Check if there's an active VM reuse session for a specific env_root.
-/// Returns true if there's an active VM session for the same environment.
-#[cfg(feature = "libkrun")]
-pub use core::is_vm_reuse_active_for_env;
-
 /// Execute a command in a libkrun VM.
 /// Creates a new VM or reuses an existing one based on run_options.
 #[cfg(feature = "libkrun")]

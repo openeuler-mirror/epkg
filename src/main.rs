@@ -1160,12 +1160,11 @@ fn add_run_subcommand(cmd: Command) -> Command {
                         .value_parser(clap::value_parser!(String))
                 )
                 .arg(arg!(--timeout <SECONDS> "Timeout in seconds (0 = no timeout)").value_parser(clap::value_parser!(String)))
-                .arg(arg!(--reuse "With --isolate=vm: connect to an already-running QEMU guest over vsock (no new VM)"))
                 .arg(
                     Arg::new("vm-keep-timeout")
                         .long("vm-keep-timeout")
                         .value_name("SECS")
-                        .help("With --isolate=vm: after each command exits, wait up to SECS seconds for another connection (e.g. epkg run --reuse). Omit for a one-shot VM.")
+                        .help("With --isolate=vm: after each command exits, wait up to SECS seconds for another connection. None = one-shot VM (immediate shutdown). 0 = never timeout.")
                         .value_parser(clap::value_parser!(u32))
                 )
                 .arg(
@@ -2597,8 +2596,7 @@ fn try_route_command_via_vm(matches: &clap::ArgMatches) -> Result<Option<i32>> {
             crate::models::IoMode::Stream,
             Some(&env_vars),
             None, // cwd - epkg commands don't need specific working directory
-            None, // stdin - vm session routing doesn need stdin
-            false, // reuse_vm - ignored by execute_via_existing_vm which always uses true
+            None, // stdin - vm session routing doesn't need stdin
         )
     }
     #[cfg(not(feature = "libkrun"))]

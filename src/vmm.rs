@@ -43,16 +43,13 @@ pub fn try_vmm_backends(
     guest_command: &Path,
     vm_socket_path: Option<&Path>,
     vmm_order: &[String],
-    vm_reuse_connect: bool,
     #[cfg(target_os = "linux")] vm_daemon_ready_fd: Option<&OwnedFd>,
     #[cfg(not(target_os = "linux"))] _vm_daemon_ready_fd: Option<&()>,
 ) -> Result<()> {
     #[cfg(target_os = "linux")]
     let _ = crate::qemu::ensure_vmm_log_dir();
 
-    let order: Vec<String> = if vm_reuse_connect {
-        vec!["qemu".to_string()]
-    } else if !vmm_order.is_empty() {
+    let order: Vec<String> = if !vmm_order.is_empty() {
         vmm_order.to_vec()
     } else {
         default_vmm_order()

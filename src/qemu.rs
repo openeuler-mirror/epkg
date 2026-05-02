@@ -879,7 +879,7 @@ fn handle_guest_execution(
         // Use QEMU's PID as daemon_pid so session stays valid while QEMU is alive
         let daemon_pid = qemu_child.id();
         let config = crate::vm::VmConfig {
-            timeout: vm_keep_timeout.unwrap_or(0),
+            timeout: vm_keep_timeout,  // None: immediate, Some(0): never, Some(N): N seconds
             extend: 10,
             cpus: vm_cpus as u32,
             memory_mib: vm_memory_mb,
@@ -966,22 +966,22 @@ fn handle_guest_execution(
         client::wait_for_guest_ready(guest_cid, Some(qemu_child), Some(&qemu_stderr_path))?;
         log::info!("qemu: guest is ready");
 
-        // Register session if vm_keep_timeout is set (VM will continue running after command)
-        if vm_keep_timeout.is_some() {
-            let env_name = &crate::models::config().common.env_name;
-            let socket_path = std::path::PathBuf::from(format!("vsock:{}", guest_cid));
-            // Use QEMU's PID as daemon_pid so session stays valid while QEMU is alive
-            let daemon_pid = qemu_child.id();
-            let config = crate::vm::VmConfig {
-                timeout: vm_keep_timeout.unwrap_or(0),
-                extend: 10,
-                cpus: vm_cpus as u32,
-                memory_mib: vm_memory_mb,
-                backend: "qemu".to_string(),
-            };
-            crate::vm::register_vm_session(env_root, env_name, &socket_path, "qemu", &config, daemon_pid)?;
-            log::info!("qemu: registered VM session for {} (CID={}, PID={})", env_name, guest_cid, daemon_pid);
-        }
+        // ALWAYS register session file for cross-process discovery.
+        // Other processes may try to connect concurrently.
+        // Stale session cleanup happens when connection fails.
+        let env_name = &crate::models::config().common.env_name;
+        let socket_path = std::path::PathBuf::from(format!("vsock:{}", guest_cid));
+        // Use QEMU's PID as daemon_pid so session stays valid while QEMU is alive
+        let daemon_pid = qemu_child.id();
+        let config = crate::vm::VmConfig {
+            timeout: vm_keep_timeout,  // None: immediate, Some(0): never, Some(N): N seconds
+            extend: 10,
+            cpus: vm_cpus as u32,
+            memory_mib: vm_memory_mb,
+            backend: "qemu".to_string(),
+        };
+        crate::vm::register_vm_session(env_root, env_name, &socket_path, "qemu", &config, daemon_pid)?;
+        log::info!("qemu: registered VM session for {} (CID={}, PID={})", env_name, guest_cid, daemon_pid);
 
         // Now send command
         match client::send_command_via_vsock_simple(
@@ -1126,32 +1126,6 @@ pub fn run_command_in_qemu(
     existing_socket_path: Option<&Path>,
     vm_daemon_ready_fd: Option<&std::os::fd::OwnedFd>,
 ) -> Result<()> {
-    // For vm_reuse_connect, connect to existing VM session
-    if run_options.vm_reuse_connect {
-        // Discover session to get CID
-        let env_name = &crate::models::config().common.env_name;
-        let info = crate::vm::discover_vm_session(env_name)?
-            .ok_or_else(|| eyre::eyre!("No active VM session found for {}", env_name))?;
-
-        // Parse CID from socket_path (format: "vsock:{CID}")
-        let socket_str = info.socket_path.to_string_lossy();
-        let cid: u32 = socket_str
-            .strip_prefix("vsock:")
-            .and_then(|s| s.parse().ok())
-            .ok_or_else(|| eyre::eyre!("Invalid vsock socket_path: {}", socket_str))?;
-        log::info!("qemu: reusing VM session with CID {}", cid);
-
-        let (cmd_parts, _) = build_guest_command(guest_cmd_path, &run_options.args)?;
-        let code = client::send_command_to_running_qemu_guest(
-            &cmd_parts,
-            run_options.io_mode,
-            cid,
-            run_options.vm_keep_timeout,
-            run_options.user.as_deref(),
-        )?;
-        std::process::exit(code);
-    }
-
     let setup = setup_qemu_vm(env_root, run_options, existing_socket_path)?;
 
     // Build guest command (for vm_daemon mode, guest_cmd_path is already /bin/true from vm_start())

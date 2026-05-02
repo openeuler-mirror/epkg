@@ -766,7 +766,6 @@ fn setup_vm_sandbox(context: &UnifiedChildContext) -> Result<()> {
         &guest_command,
         context.vm_socket_path.as_deref(),
         &context.run_options.vmm_order,
-        context.run_options.vm_reuse_connect,
         context.vm_daemon_ready_fd.as_ref(),
     )
 }

@@ -209,7 +209,6 @@ fn connect_vsock_once(cid: u32, port: u32) -> std::io::Result<TcpStream> {
 pub fn build_command_request(
     cmd_parts: &[String],
     io_mode: IoMode,
-    reuse_session: bool,
     vm_keep_timeout_secs: Option<u32>,
     user: Option<&str>,
 ) -> serde_json::Map<String, serde_json::Value> {
@@ -249,11 +248,12 @@ pub fn build_command_request(
         request.insert("batch".to_string(), serde_json::Value::Bool(true));
     }
 
-    if reuse_session {
-        request.insert("reuse_vm".to_string(), serde_json::Value::Bool(true));
-        if let Some(secs) = vm_keep_timeout_secs {
-            request.insert("vm_keep_timeout_secs".to_string(), serde_json::Value::Number(secs.into()));
-        }
+    // VM lifecycle: vm_keep_timeout_secs controls idle timeout
+    // - None: immediate shutdown
+    // - Some(0): never timeout
+    // - Some(N): idle N seconds
+    if let Some(secs) = vm_keep_timeout_secs {
+        request.insert("vm_keep_timeout_secs".to_string(), serde_json::Value::Number(secs.into()));
     }
 
     // Pass host time for guest clock synchronization
@@ -306,7 +306,7 @@ fn send_command_via_tcp_impl(
     log::debug!("vm_client: TCP connected, sending command {:?}", cmd_parts);
 
     // Build and send JSON request
-    let request = build_command_request(cmd_parts, io_mode, reuse_session, vm_keep_timeout_secs, user);
+    let request = build_command_request(cmd_parts, io_mode, vm_keep_timeout_secs, user);
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
@@ -333,18 +333,6 @@ pub fn send_command_via_vsock(
     unix_socket_path: Option<&std::path::Path>,
 ) -> Result<i32> {
     send_command_via_vsock_impl(cmd_parts, io_mode, cid, port, unix_socket_path, false, None, None)
-}
-
-/// Connect to an already-running QEMU guest (AF_VSOCK to guest CID, command port) without
-/// the ready handshake. Use after starting a VM with `epkg run --isolate=vm --vm-keep-timeout …`.
-pub fn send_command_to_running_qemu_guest(
-    cmd_parts: &[String],
-    io_mode: IoMode,
-    cid: u32,
-    vm_keep_timeout_secs: Option<u32>,
-    user: Option<&str>,
-) -> Result<i32> {
-    send_command_via_vsock_impl(cmd_parts, io_mode, cid, 10000, None, true, vm_keep_timeout_secs, user)
 }
 
 /// Try to discover and connect to an existing VM session.
@@ -390,15 +378,13 @@ pub fn try_execute_via_existing_vm_session(
         log::debug!("vm_client: parsed CID {} from socket_path", cid);
 
         // Use session's configured timeout for vm_keep_timeout
-        // Per guest_daemon.rs:1713-1716: timeout=0 means "never timeout"
-        // Pass Some(0) to guest, NOT None (which triggers default 30s timeout)
-        let vm_keep_timeout_secs = Some(info.config.timeout);
+        // None: immediate shutdown, Some(0): never timeout, Some(N): idle N seconds
+        let vm_keep_timeout_secs = info.config.timeout;
 
         // Build request with env_vars and cwd
         let request = build_extended_command_request(
             cmd_parts,
             io_mode,
-            true,  // reuse_session
             vm_keep_timeout_secs,
             None,  // user
             env_vars,
@@ -435,13 +421,13 @@ pub fn try_execute_via_existing_vm_session(
         let mut stream = connect_unix_socket_with_retry(&info.socket_path, 30)?;
 
         // Use session's configured timeout for vm_keep_timeout
-        let vm_keep_timeout_secs = Some(info.config.timeout);
+        // None: immediate shutdown, Some(0): never timeout, Some(N): idle N seconds
+        let vm_keep_timeout_secs = info.config.timeout;
 
         // Build request with env_vars and cwd
         let request = build_extended_command_request(
             cmd_parts,
             io_mode,
-            true,  // reuse_session
             vm_keep_timeout_secs,
             None,  // user
             env_vars,
@@ -477,7 +463,6 @@ pub fn try_execute_via_existing_vm_session(
 fn build_extended_command_request(
     cmd_parts: &[String],
     io_mode: IoMode,
-    reuse_session: bool,
     vm_keep_timeout_secs: Option<u32>,
     user: Option<&str>,
     env_vars: Option<&std::collections::HashMap<String, String>>,
@@ -492,11 +477,12 @@ fn build_extended_command_request(
     if use_pty {
         m.insert("pty".to_string(), serde_json::Value::Bool(true));
     }
-    if reuse_session {
-        m.insert("reuse_vm".to_string(), serde_json::Value::Bool(true));
-        if let Some(secs) = vm_keep_timeout_secs {
-            m.insert("vm_keep_timeout_secs".to_string(), serde_json::Value::Number(secs.into()));
-        }
+    // VM lifecycle: vm_keep_timeout_secs controls idle timeout
+    // - None: immediate shutdown
+    // - Some(0): never timeout
+    // - Some(N): idle N seconds
+    if let Some(secs) = vm_keep_timeout_secs {
+        m.insert("vm_keep_timeout_secs".to_string(), serde_json::Value::Number(secs.into()));
     }
     if let Some(u) = user {
         m.insert("user".to_string(), serde_json::Value::String(u.to_string()));
@@ -576,7 +562,7 @@ fn send_command_via_vsock_impl(
     };
     log::debug!("vm_client: vsock connected, sending command {:?}", cmd_parts);
 
-    let request = build_command_request(cmd_parts, io_mode, reuse_session, vm_keep_timeout_secs, user);
+    let request = build_command_request(cmd_parts, io_mode, vm_keep_timeout_secs, user);
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;

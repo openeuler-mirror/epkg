@@ -32,7 +32,7 @@ fn parse_kv_args(args: Option<clap::parser::ValuesRef<String>>, vmm: Option<&str
             match key {
                 "timeout" => {
                     if let Ok(v) = value.parse() {
-                        config.timeout = v;
+                        config.timeout = Some(v);
                     }
                 }
                 "extend" => {
@@ -84,7 +84,7 @@ fn vm_start(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()> {
         sandbox: sandbox.clone(),
         effective_sandbox: sandbox,
         vm_daemon: true,                           // Signal daemon mode to downstream
-        vm_keep_timeout: Some(config.timeout),     // Keep VM alive after dummy command
+        vm_keep_timeout: config.timeout,           // Keep VM alive after dummy command
         vm_cpus: Some(config.cpus as u8),
         vm_memory_mib: Some(config.memory_mib),
         vmm_order: vec![config.backend.clone()],
@@ -92,7 +92,7 @@ fn vm_start(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()> {
         ..Default::default()
     };
 
-    log::info!("vm_start: starting VM daemon for {} (backend={}, timeout={}s)",
+    log::info!("vm_start: starting VM daemon for {} (backend={}, timeout={:?})",
                env_name, config.backend, config.timeout);
 
     // fork_and_execute handles:
@@ -128,10 +128,10 @@ pub fn cmd_vm_start(args: &ArgMatches) -> Result<()> {
     // Unified start for all platforms
     vm_start(&env_root, &env_name, config.clone())?;
 
-    let timeout_desc = if config.timeout == 0 {
-        "never".to_string()
-    } else {
-        format!("{}s", config.timeout)
+    let timeout_desc = match config.timeout {
+        None => "immediate".to_string(),
+        Some(0) => "never".to_string(),
+        Some(n) => format!("{}s", n),
     };
     println!("VM started for {} (timeout={}, extend={}s)",
              env_name, timeout_desc, config.extend);

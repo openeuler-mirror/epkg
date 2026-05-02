@@ -22,20 +22,6 @@ use crate::models::*;
 ))]
 pub const VM_SESSION_DONE_CMD: &str = "__epkg_vm_session_done__";
 
-/// Check if there's an active VM reuse session for a specific env_root.
-/// Returns true if there's an active VM session for the same environment.
-/// Used by scriptlets/hooks to inherit VM settings during install/upgrade.
-#[cfg(feature = "libkrun")]
-pub fn is_vm_reuse_active_for_env(env_root: &Path) -> bool {
-    crate::libkrun::is_vm_reuse_active_for_env(env_root)
-}
-
-/// Stub for non-libkrun builds - always returns false.
-#[cfg(not(feature = "libkrun"))]
-pub fn is_vm_reuse_active_for_env(_env_root: &Path) -> bool {
-    false
-}
-
 /// Try to connect to an existing VM session and execute the command.
 /// Returns Some(exit_code) if successfully connected and executed.
 /// Returns None if no existing VM session exists.
@@ -65,7 +51,6 @@ fn try_connect_and_execute_vm(env_root: &Path, run_options: &RunOptions) -> Resu
         Some(&run_options.env_vars),
         cwd,
         run_options.stdin.as_deref(),
-        run_options.reuse_vm,
     )
 }
 
@@ -139,13 +124,11 @@ pub struct RunOptions {
     /// Preferred VMM backend order for IsolateMode::Vm.
     /// Example: ["libkrun", "qemu"] or ["qemu"].
     pub vmm_order: Vec<String>,
-    /// Keep the microVM alive between `fork_and_execute` calls (install/upgrade on non-Linux hosts).
-    /// Cleared after the transaction sends the reserved session-done command to the guest VM.
-    pub reuse_vm: bool,
-    /// Skip QEMU and connect to an already-running QEMU guest over AF_VSOCK (`epkg run --reuse`).
-    pub vm_reuse_connect: bool,
     /// With `--isolate=vm`, after each command finishes (and while no follow-up is connected),
-    /// wait this many seconds for another connection (`epkg run --reuse`). `None` = one-shot VM.
+    /// wait this many seconds for another connection. `None` = one-shot VM.
+    /// - None: immediate shutdown after command
+    /// - Some(0): never timeout
+    /// - Some(N): idle N seconds then shutdown
     pub vm_keep_timeout: Option<u32>,
 
     /// UID mapping specifications for virtiofs in VM mode.
@@ -1518,37 +1501,6 @@ fn prepare_run_options_for_command(env_root: &Path, run_options: &mut RunOptions
         run_options.effective_sandbox.isolate_mode = Some(IsolateMode::Vm);
     }
 
-    // VM reuse is mandatory for data integrity - only ONE VM per env_root.
-    // This prevents concurrent host/guest file operations from corrupting data.
-    // Always check for existing VM session first and reuse it if available.
-    let _env_name = &config().common.env_name;
-    #[cfg(not(target_os = "linux"))]
-    let has_active_vm_session = is_vm_reuse_active_for_env(env_root) ||
-        crate::vm::is_vm_session_active(_env_name);
-    #[cfg(target_os = "linux")]
-    let _has_active_vm_session = is_vm_reuse_active_for_env(env_root) ||
-        crate::vm::is_vm_session_active(_env_name);
-
-    // If VM mode is active or an existing session exists, always enable reuse.
-    // This ensures scriptlets/hooks reuse the same VM during install/upgrade.
-    // VM reuse is mandatory for data integrity - only ONE VM per env_root.
-    #[cfg(not(target_os = "linux"))]
-    if has_active_vm_session ||
-       run_options.effective_sandbox.isolate_mode == Some(IsolateMode::Vm) {
-        run_options.reuse_vm = true;
-    }
-    // On Linux (QEMU backend), also enable reuse when VM mode is requested.
-    #[cfg(target_os = "linux")]
-    if run_options.effective_sandbox.isolate_mode == Some(IsolateMode::Vm) {
-        run_options.reuse_vm = true;
-    }
-
-    // If vm_keep_timeout is set, enable reuse_vm mode to keep the VM alive
-    // after the command completes.
-    if run_options.vm_keep_timeout.is_some() {
-        run_options.reuse_vm = true;
-    }
-
     // Silence unused warning on Linux
     #[cfg(target_os = "linux")]
     let _ = is_linux_format;
@@ -1865,15 +1817,14 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
         .map(|s| s.parse::<crate::models::IoMode>().expect("clap validates auto|tty|stream|batch"))
         .unwrap_or_default();
 
-    let vm_reuse_connect = sub_matches.get_flag("reuse");
     let vm_keep_timeout = sub_matches
         .get_one::<u32>("vm-keep-timeout")
         .copied();
-    if vm_reuse_connect || vm_keep_timeout.is_some() {
+    if vm_keep_timeout.is_some() {
         let vm_mode = isolate_mode == Some(crate::models::IsolateMode::Vm);
         if !vm_mode {
             return Err(eyre::eyre!(
-                "--reuse and --vm-keep-timeout require --isolate=vm"
+                "--vm-keep-timeout requires --isolate=vm"
             ));
         }
     }
@@ -1913,7 +1864,6 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
         io_mode,
         sandbox,
         vmm_order,
-        vm_reuse_connect,
         vm_keep_timeout,
         translate_uid,
         translate_gid,

@@ -18,8 +18,7 @@
 //! # Protocol Design
 //! ## Connection Model
 //! - Default: one command per connection; after the command the daemon may wait for more
-//!   connections (install/upgrade reuse, see `reuse_vm` and reserved `command` `__epkg_vm_session_done__`)
-//!   or power off the guest (e.g. `epkg run --isolate=vm` one-shot)
+//!   connections (vm_keep_timeout controls idle wait) or power off the guest (vm_keep_timeout=None)
 //! - Note: vm-daemon is forked from init.rs (PID 1), not running as PID 1 itself
 //!
 //! ## Message Format
@@ -144,8 +143,8 @@ use std::thread::{self, JoinHandle};
 /// Poll timeout in milliseconds for PTY/pipe and TCP wait.
 const POLL_TIMEOUT_MS: u32 = 100;
 
-/// Default idle window (ms) for another vsock connection when `reuse_vm` is set but
-/// `vm_keep_timeout_secs` is omitted in the JSON request.
+/// Default idle window (ms) for another vsock connection.
+/// This is no longer actively used since vm_keep_timeout_secs controls idle timeout directly.
 const VM_REUSE_IDLE_TIMEOUT_MS: u32 = 30_000;
 
 /// Maximum poll loop iterations in non-PTY mode before forcing exit (safety limit).
@@ -363,11 +362,10 @@ pub struct VmDaemonOptions {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommandRequest {
-    /// After this command, wait for more connections instead of powering off.
-    #[serde(default)]
-    reuse_vm: bool,
     /// Idle time in whole seconds to wait for the next connection after this command completes.
-    /// When omitted with `reuse_vm`, [`VM_REUSE_IDLE_TIMEOUT_MS`] is used.
+    /// - None: immediate shutdown after command
+    /// - Some(0): never timeout (infinite wait)
+    /// - Some(N): idle N seconds then shutdown
     #[serde(default)]
     vm_keep_timeout_secs: Option<u32>,
     /// Host Unix timestamp in nanoseconds for guest clock synchronization.
@@ -1744,19 +1742,28 @@ fn handle_connection(mut stream: TcpStream) -> Result<ConnectionDisposition> {
                         log::debug!("[vm_daemon] Command completed with exit code: {}", exit_code);
                         debug_file_write(&format!("handle_connection: command completed with exit_code={}\n", exit_code));
 
-                        if request.reuse_vm {
-                            // timeout=0 means "never timeout" - use 0 which triggers infinite poll
-                            let idle_ms = request
-                                .vm_keep_timeout_secs
-                                .map(|s| if s == 0 { 0 } else { s.saturating_mul(1000) })
-                                .unwrap_or(VM_REUSE_IDLE_TIMEOUT_MS);
-                            let _ = kmsg_write("<6>handle_connection: reuse_vm=true, returning ReuseWait\n");
-                            return Ok(ConnectionDisposition::ReuseWait {
-                                idle_timeout_ms: idle_ms,
-                            });
-                        } else {
-                            let _ = kmsg_write("<6>handle_connection: reuse_vm=false, returning Shutdown\n");
-                            return Ok(ConnectionDisposition::Shutdown);
+                        // VM lifecycle based on vm_keep_timeout_secs:
+                        // - None: immediate shutdown
+                        // - Some(0): never timeout (infinite wait)
+                        // - Some(N): idle N seconds then shutdown
+                        match request.vm_keep_timeout_secs {
+                            None => {
+                                let _ = kmsg_write("<6>handle_connection: vm_keep_timeout=None, returning Shutdown\n");
+                                return Ok(ConnectionDisposition::Shutdown);
+                            }
+                            Some(0) => {
+                                let _ = kmsg_write("<6>handle_connection: vm_keep_timeout=0, returning ReuseWait (infinite)\n");
+                                return Ok(ConnectionDisposition::ReuseWait {
+                                    idle_timeout_ms: 0,  // 0 = infinite
+                                });
+                            }
+                            Some(secs) => {
+                                let idle_ms = secs.saturating_mul(1000);
+                                let _ = kmsg_write(&format!("<6>handle_connection: vm_keep_timeout={}s, returning ReuseWait {}ms\n", secs, idle_ms));
+                                return Ok(ConnectionDisposition::ReuseWait {
+                                    idle_timeout_ms: idle_ms,
+                                });
+                            }
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {

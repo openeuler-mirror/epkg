@@ -14,8 +14,11 @@ use color_eyre::Result;
 /// VM configuration parameters.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VmConfig {
-    /// Idle timeout in seconds (0 = never timeout, keep VM alive indefinitely)
-    pub timeout: u32,
+    /// Idle timeout in seconds
+    /// - None: command completes -> immediate shutdown
+    /// - Some(0): never timeout, keep VM alive indefinitely
+    /// - Some(N): idle N seconds then shutdown
+    pub timeout: Option<u32>,
     /// Seconds to extend timeout after each command
     pub extend: u32,
     /// Number of CPUs for VM
@@ -29,7 +32,7 @@ pub struct VmConfig {
 impl Default for VmConfig {
     fn default() -> Self {
         Self {
-            timeout: 0,  // 0 = never auto timeout
+            timeout: None,  // Default: immediate shutdown after command
             extend: 10,
             cpus: 2,
             memory_mib: 1024,

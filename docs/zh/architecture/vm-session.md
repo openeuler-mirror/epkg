@@ -1,5 +1,29 @@
 # VM Session 架构
 
+## 设计原则
+
+### 核心原则
+
+1. **统一执行路径**: `epkg vm start` 和 `epkg run --isolate=vm` 必须使用相同的底层代码 `fork_and_execute()`。
+   - VM 启动逻辑统一，避免代码分歧
+   - 两个命令行为一致，便于维护和调试
+
+2. **统一 Session 管理**: VM session 管理机制完全相同。
+   - `epkg vm list` 显示所有活跃的 VM session，无论是 `vm start` 还是 `run --isolate=vm` 启动的
+   - Session 文件格式、位置、发现机制统一
+   - Timeout/extend 等配置语义一致
+
+3. **自动复用优先**: VM 模式默认检测并复用现有 session。
+   - 无需任何 flag，自动检测并复用
+   - Session file 是跨进程协调的唯一机制
+   - 一个 env_root 只有一个 VM 实例（ONE VM per env_root）
+
+4. **vm_keep_timeout 控制生命周期**:
+   - `vm_keep_timeout` 是控制 VM 存活时间的**唯一**参数
+   - 有 timeout: VM 空闲 timeout 秒后关闭
+   - 无 timeout: 命令完成后立即关闭
+   - timeout=0: 永不关闭
+
 ## 问题背景
 
 pir.py 连续调用多个 epkg run 命令，每次都有 ~2-3s VM 启动开销（macOS libkrun backend）。
@@ -200,19 +224,35 @@ epkg vm stop fuzz-alpine
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### epkg run 自动复用流程
+### epkg run 流程（统一流程）
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  epkg run --isolate=vm -- ls                                            │
 │                                                                         │
-│  1. VM 模式 → 自动检测 session                                          │
-│  2. 发现 session → 自动设置 reuse_vm=true                               │
-│  3. 验证 daemon_pid alive                                               │
-│  4. 验证 socket connectable                                             │
-│  5. 连接 vsock socket                                                   │
-│  6. 发送命令                                                            │
-│  7. Guest 执行完成后，空闲计时开始                                      │
+│  epkg run 关注: client<>daemon 请求/响应交互                            │
+│  VM lifecycle 关注: VM 存活时间 (>= epkg run lifecycle)                 │
+│                                                                         │
+│  统一流程:                                                              │
+│  1. 检查 session file 是否存在                                          │
+│     ├─ 存在 → 复用现有 VM                                               │
+│     │   - 连接 socket，发送命令                                         │
+│     │   - 使用 session config 的 timeout                                │
+│     │                                                                   │
+│     └─ 不存在 → 启动新 VM                                               │
+│     │   - 注册 session file                                             │
+│     │   - 连接 socket，发送命令                                         │
+│     │   - vm_keep_timeout 参数决定 VM 存活时间                          │
+│     │                                                                   │
+│  2. 发送命令请求（包含 vm_keep_timeout_secs）                           │
+│  3. Guest daemon 执行命令，返回结果                                     │
+│  4. epkg run 收到结果后退出                                             │
+│                                                                         │
+│  VM lifecycle (独立于 epkg run):                                        │
+│  Guest daemon 根据 vm_keep_timeout_secs 决定:                           │
+│     ├─ > 0: 等待 idle timeout (可能服务后续 epkg run)                   │
+│     ├─ = 0: 永不关闭                                                    │
+│     └─ 未设置: 立即 shutdown                                            │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -225,30 +265,67 @@ epkg vm stop fuzz-alpine
 
 ## Timeout 语义
 
-- **timeout=0（默认）**: 永不自动超时，VM 会一直运行直到手动停止
-- **timeout=N**: 空闲 N 秒后自动关闭（从命令执行**完成**开始计时，不是从开始运行）
-- **自动延长**：每次 `epkg run` 完成后延长 `extend` 秒
+### vm_keep_timeout 参数
 
-## 自动复用机制
+**控制 VM 存活时间的唯一参数**：
 
-VM 模式自动检测现有 session：
+| 值 | 语义 |
+|----|----|
+| `Some(N)` (N > 0) | 空闲 N 秒后自动关闭 |
+| `Some(0)` | 永不超时，VM 一直运行直到手动停止 |
+| `None` | 命令完成后立即关闭 |
+
+**空闲计时**：从命令执行**完成**开始计时，不是从开始运行。
+
+**Session 复用**：复用现有 session 时使用 session config 中的 timeout 值。
+
+### extend 机制
+
+每次 `epkg run` 完成后可延长存活时间 `extend` 秒（session config 中配置）。
+
+## Session 发现与复用机制
+
+### 统一原则
+
+**Session file ALWAYS**:
+- 执行命令前：必须检查 session file（其他进程可能已启动 VM）
+- 启动新 VM 时：必须注册 session file（其他进程可能需要复用）
+
+这处理了所有并发场景：多个终端同时运行 `epkg run` 或 `epkg vm start`。
+
+### 发现流程
 
 ```rust
-// src/run.rs
-#[cfg(not(target_os = "linux"))]
-let has_active_vm_session = is_vm_reuse_active_for_env(env_root) ||
-    crate::vm::is_vm_session_active(env_root);
-
-if has_active_vm_session {
-    run_options.reuse_vm = true;
-    run_options.effective_sandbox.isolate_mode = Some(IsolateMode::Vm);
-}
+// src/vm/client.rs: try_execute_via_existing_vm_session()
+1. 检查 session 文件是否存在
+2. 解析 JSON 内容
+3. 验证 env_name 匹配
+4. 检查 daemon_pid 是否存活（kill(pid, 0)）
+5. 尝试连接 socket（验证 VM 真正可用）
+6. 如果可用 → 发送命令，使用 session 的 timeout
+7. 如果不可用 → 清理 stale session，返回 None
 ```
 
-- `is_vm_reuse_active_for_env()` - 检查当前进程内的 VM session（快速路径）
-- `crate::vm::is_vm_session_active()` - 检查跨进程的 VM session（磁盘文件）
+### Session 文件位置
 
-无需手动指定 `--reuse`，只要检测到活跃 session 就自动复用。
+```
+{epkg_run}/vm-sessions/{env_name}.json
+{epkg_run}/vsock-{env_name}.sock
+```
+
+env_name 就是环境名称，不关心/假设它来自 `-e` 还是 `-r`。
+
+### Stale Session 清理
+
+Session 文件可能因进程崩溃而残留。清理条件：
+1. daemon_pid 不存活
+2. socket 不可连接
+
+```rust
+if !is_process_alive(info.daemon_pid) {
+    cleanup_vm_session_files(&session_file, &socket_path);
+}
+```
 
 ## 与 pir.py 集成
 
@@ -259,7 +336,7 @@ def run_fuzz_iteration(os_name, env_name, ...):
 
     # 测试 executables（自动复用 VM）
     for exe in executables:
-        # 无需 --reuse，自动检测 VM session
+        # 无需任何 flag，自动检测 VM session
         run_epkg(['run', '--isolate=vm', '--', exe, '--help'], env_name)
 
     # 停止 VM
@@ -271,8 +348,8 @@ def run_fuzz_iteration(os_name, env_name, ...):
 | 文件 | 功能 |
 |------|------|
 | `src/libkrun/mod.rs` | libkrun 模块入口 |
-| `src/libkrun/core.rs` | libkrun VM 核心逻辑（run_vm_daemon_mode） |
-| `src/libkrun/bridge.rs` | vsock 桥接（ready listener、connect、reverse mode） |
+| `src/libkrun/core.rs` | libkrun VM 核心逻辑 |
+| `src/libkrun/bridge.rs` | vsock 桥接（ready listener、connect） |
 | `src/libkrun/stream.rs` | 命令流处理（send_command_via_vsock、streaming I/O） |
 | `src/vm/mod.rs` | vm 模块入口 |
 | `src/vm/session.rs` | Session 文件管理 |
@@ -282,9 +359,10 @@ def run_fuzz_iteration(os_name, env_name, ...):
 | `src/vm/list.rs` | vm list 实现 |
 | `src/vm/status.rs` | vm status 实现 |
 | `src/vm/guest_daemon.rs` | Guest 端 vm_daemon |
-| `src/vm/client.rs` | QEMU TCP/vsock client |
+| `src/vm/client.rs` | VM session client（try_execute_via_existing_vm_session） |
 | `src/qemu.rs` | QEMU backend |
-| `src/run.rs` | 自动复用机制 |
+| `src/run.rs` | RunOptions 和 fork_and_execute |
+| `src/vmm.rs` | VMM backend 选择 |
 
 ## VM-Host 通信协议
 
@@ -300,7 +378,7 @@ Host 和 Guest 之间通过 vsock 传递 JSON 格式的 StreamMessage。每条�
  * 编码: stdout/stderr/stdin 数据使用 base64 编码
  *
  * 流程:
- *   1. Host 发送 CommandRequest (命令 + 环境 + cwd + stdin)
+ *   1. Host 发送 CommandRequest (命令 + 环境 + cwd + stdin + vm_keep_timeout_secs)
  *   2. Guest 执行命令，实时发送 Stdout/Stderr chunks
  *   3. Guest 发送 Exit 或 Error 表示执行结束
  *   4. Host 收到 Exit/Error 后关闭连接
@@ -318,40 +396,40 @@ enum StreamMessage {
      * Stdout - 标准输出数据块
      * - data: base64 编码的原始数据
      * - seq: 序号（用于调试/排序）
-     * 
+     *
      * 流量控制关键: write 后必须 yield_now()
      * 否则会丢失数据（vsock buffer ~256KB）
      */
     Stdout { data: String, seq: u64 },
-    
+
     /**
      * Stderr - 标准错误数据块
      * 格式同 Stdout，用于分离 stdout/stderr
      */
     Stderr { data: String, seq: u64 },
-    
+
     // ═══════════════════════════════════════════════════════════
     // Guest → Host: 执行结果 (终止消息)
     // ═══════════════════════════════════════════════════════════
     /**
      * Exit - 正常退出
      * - code: 命令退出码 (0=成功, >0=错误, 128+N=信号)
-     * 
+     *
      * 必须在命令执行完成后发送，即使 stdout/stderr 为空
      */
     Exit { code: i32 },
-    
+
     /**
      * Error - 异常终止
      * - message: 错误描述
-     * 
+     *
      * 用于替代 Exit，表示 guest daemon 内部错误:
      * - spawn 失败
      * - poll/read 错误
      * - 资源不足
      */
     Error { message: String },
-    
+
     // ═══════════════════════════════════════════════════════════
     // Host → Guest: 输入转发 (stream 模式)
     // ═══════════════════════════════════════════════════════════
@@ -359,31 +437,52 @@ enum StreamMessage {
      * Stdin - 标准输入数据块
      * - data: base64 编码的原始数据
      * - seq: 序号
-     * 
+     *
      * 仅在 stream 模式使用（batch 模式 stdin 在 CommandRequest 中）
      * Host stdin thread 持续读取并转发
      */
     Stdin { data: String, seq: u64 },
-    
+
     /**
      * StdinEof - stdin 结束
      * 当 host stdin 关闭时发送，通知 guest 关闭 stdin pipe
-     * 
+     *
      * 关键: 必须发送此消息，否则 guest stdin pipe 保持打开
      * 导致 cat 等命令永远等待输入
      */
     StdinEof { seq: u64 },
-    
+
     // ═══════════════════════════════════════════════════════════
     // Host → Guest: 信号/终端控制 (PTY/交互模式)
     // ═══════════════════════════════════════════════════════════
     /** Signal - 信号转发 (INT/TERM/HUP/QUIT/KILL/WINCH) */
     Signal { signal: String },
-    
+
     /** Resize - 终端大小变化 */
     Resize { rows: u16, cols: u16 },
 }
 ```
+
+### 命令请求格式
+
+```rust
+/**
+ * CommandRequest - Host 发送给 Guest 的命令请求
+ */
+{
+    "command": ["ls", "-la"],          // 命令和参数
+    "cwd": "/home/user",               // 工作目录
+    "env": { "PATH": "...", ... },     // 环境变量
+    "pty": false,                      // 是否使用 PTY
+    "batch": false,                    // 是否 batch 模式
+    "stdin": "",                       // stdin 数据 (base64)
+    "vm_keep_timeout_secs": 60,        // 空闲超时（秒）
+    // vm_keep_timeout_secs:
+    //   - Some(N) > 0: 空闲 N 秒后关闭
+    //   - Some(0): 永不关闭
+    //   - None: 命令完成后立即关闭
+    "host_time": 1712345678000000000   // host 时间（纳秒，用于 guest 时钟同步）
+}
 ```
 
 ### 消息流程
@@ -391,7 +490,7 @@ enum StreamMessage {
 ```
 Host                              Guest
   │                                 │
-  │──── CommandRequest (JSON) ─────►│  命令 + 环境 + cwd + stdin(batch)
+  │──── CommandRequest (JSON) ─────►│  命令 + 环境 + cwd + stdin + vm_keep_timeout_secs
   │                                 │
   │◄──── Stdout/Stderr ────────────│  实时输出流 (blocking write + yield)
   │◄──── Stdout/Stderr ────────────│  (base64 编码, 每块 <4KB)
@@ -402,6 +501,28 @@ Host                              Guest
   │                                 │
   │◄──── Exit/Error ───────────────│  执行结果
   │                                 │
+```
+
+### Guest Daemon 行为
+
+根据 `vm_keep_timeout_secs` 决定命令完成后的行为：
+
+```rust
+// src/vm/guest_daemon.rs: handle_connection()
+match request.vm_keep_timeout_secs {
+    Some(0) => {
+        // 永不超时 - 无限等待下一个连接
+        ConnectionDisposition::ReuseWait { idle_timeout_ms: 0 }
+    }
+    Some(secs) if secs > 0 => {
+        // 空闲 secs 秒后关闭
+        ConnectionDisposition::ReuseWait { idle_timeout_ms: secs * 1000 }
+    }
+    None => {
+        // 立即关闭
+        ConnectionDisposition::Shutdown
+    }
+}
 ```
 
 ### Batch vs Stream 模式
@@ -449,18 +570,18 @@ stdin: 独立 thread 持续转发 (实时)
 fn write_stream_message(stream: &mut TcpStream, msg: &StreamMessage) {
     // 1. 切换到 blocking 模式 (kernel 处理 backpressure)
     stream.set_nonblocking(false)?;
-    
+
     // 2. 写入数据 (会阻塞直到 buffer 有空间)
     stream.write_all(json.as_bytes());
     stream.write_all(b"\n");
     stream.flush();
-    
+
     // 3. 关键: yield 让 kernel 处理数据
     //    - vsock kernel thread 发送数据到 host
     //    - host 读取数据，发送 credit update
     //    - guest kernel 更新可用 buffer 空间
     std::thread::yield_now();
-    
+
     // 4. 恢复 non-blocking 模式 (poll loop 需要)
     stream.set_nonblocking(true)?;
 }
@@ -529,10 +650,10 @@ let stdin_pipe = if request.batch {
 // stdin thread 仅在 stream 模式运行 (!is_batch)
 loop {
     if exit_code.is_some() { break; }
-    
+
     // poll stdin
     poll(stdin_fd, POLLIN, timeout=50ms);
-    
+
     if ready {
         read(stdin) → encode base64 → send Stdin message
     }
@@ -573,6 +694,7 @@ if !got_exit {
 | `src/vm/guest_daemon.rs` | `write_stream_message()` | blocking write + yield |
 | `src/vm/guest_daemon.rs` | `spawn_child_piped()` | stdin pipe 创建逻辑 |
 | `src/vm/guest_daemon.rs` | `nonpty_poll_loop()` | poll loop 处理 |
+| `src/vm/guest_daemon.rs` | `handle_connection()` | vm_keep_timeout_secs 处理 |
 | `src/libkrun/stream.rs` | `handle_streaming_simple()` | host reader/stdin thread |
 | `src/libkrun/stream.rs` | `send_command_via_vsock()` | 命令发送入口 |
 | `git/libkrun/unix.rs` | `sendmsg()` | TX retry + credit update |
@@ -613,62 +735,8 @@ let run_options = RunOptions {
 };
 
 // prepare_run_options_for_command() 自动检测 VM session
-// 并设置 reuse_vm=true
+// 并复用现有 session
 fork_and_execute(env_root, &run_options)?;
-```
-
-### 自动 VM 复用检测
-
-```rust
-// src/run.rs: prepare_run_options_for_command()
-#[cfg(not(target_os = "linux"))]
-let has_active_vm_session = is_vm_reuse_active_for_env(env_root) ||
-    crate::vm::is_vm_session_active(env_root);
-
-if has_active_vm_session {
-    run_options.reuse_vm = true;
-}
-```
-
-两种检测方式：
-1. **进程内检测** (`is_vm_reuse_active_for_env`)：检查当前进程的 `VM_REUSE_SESSION` 全局变量
-2. **跨进程检测** (`is_vm_session_active`)：检查磁盘上的 session 文件
-
-## Session 发现与验证
-
-### 发现流程
-
-```rust
-// src/vm/session.rs: discover_vm_session()
-1. 检查 session 文件是否存在
-2. 解析 JSON 内容
-3. 验证 env_root 匹配
-4. 检查 daemon_pid 是否存活（kill(pid, 0)）
-5. 尝试连接 socket（验证 VM 真正可用）
-```
-
-### Session 文件位置
-
-```
-{epkg_run}/vm-sessions/{env_name}.json
-{epkg_run}/vsock-{env_name}.sock
-```
-
-env_name 由 env_root 路径转换而来：
-```
-/Users/aa/.epkg/envs/main → Users__aa__.epkg__envs__main
-```
-
-### Stale Session 清理
-
-Session 文件可能因进程崩溃而残留。清理条件：
-1. daemon_pid 不存活
-2. socket 不可连接
-
-```rust
-if !is_process_alive(info.daemon_pid) {
-    cleanup_vm_session_files(&session_file, &socket_path);
-}
 ```
 
 ## 常见问题与解决
@@ -718,7 +786,7 @@ epkg vm list
 # 查看 VM 详情（YAML）
 epkg vm status fuzz-alpine
 
-# 自动复用 VM（无需 --reuse）
+# 自动复用 VM（无需任何 flag）
 epkg run --isolate=vm -- ls
 
 # 停止 VM

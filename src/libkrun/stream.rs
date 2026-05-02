@@ -91,7 +91,6 @@ enum StreamMessage {
 pub(crate) fn build_command_request(
     cmd_parts: &[String],
     io_mode: IoMode,
-    reuse_vm: bool,
     vm_keep_timeout_secs: Option<u32>,
     extend_timeout_secs: Option<u32>,
     env_vars: Option<&std::collections::HashMap<String, String>>,
@@ -129,14 +128,12 @@ pub(crate) fn build_command_request(
     if is_batch {
         m.insert("batch".to_string(), serde_json::Value::Bool(true));
     }
-    if reuse_vm {
-        m.insert("reuse_vm".to_string(), serde_json::Value::Bool(true));
-        if let Some(secs) = vm_keep_timeout_secs {
-            m.insert("vm_keep_timeout_secs".to_string(), serde_json::Value::Number(secs.into()));
-        }
-        if let Some(secs) = extend_timeout_secs {
-            m.insert("extend_timeout_secs".to_string(), serde_json::Value::Number(secs.into()));
-        }
+    // VM lifecycle: None=immediate shutdown, Some(0)=never, Some(N)=N seconds idle
+    if let Some(secs) = vm_keep_timeout_secs {
+        m.insert("vm_keep_timeout_secs".to_string(), serde_json::Value::Number(secs.into()));
+    }
+    if let Some(secs) = extend_timeout_secs {
+        m.insert("extend_timeout_secs".to_string(), serde_json::Value::Number(secs.into()));
     }
     // Add environment variables if provided
     if let Some(env) = env_vars {
@@ -339,7 +336,6 @@ fn handle_streaming_simple(stream: &mut std::os::unix::net::UnixStream, is_batch
 pub fn send_command_via_vsock(
     cmd_parts: &[String],
     io_mode: IoMode,
-    reuse_vm: bool,
     vm_keep_timeout_secs: Option<u32>,
     extend_timeout_secs: Option<u32>,
     sock_path: &Path,
@@ -352,11 +348,11 @@ pub fn send_command_via_vsock(
 
     let (use_pty, is_batch) = resolve_io_mode(io_mode);
     log::debug!(
-        "libkrun: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
+        "libkrun: io_mode={:?}, use_pty={}, is_batch={}, vm_keep_timeout={:?}",
         io_mode,
         use_pty,
         is_batch,
-        reuse_vm
+        vm_keep_timeout_secs
     );
 
     let mut stream = {
@@ -394,7 +390,7 @@ pub fn send_command_via_vsock(
 
     log::debug!("libkrun: Unix socket connected, sending command {:?}", cmd_parts);
 
-    let request = build_command_request(cmd_parts, io_mode, reuse_vm, vm_keep_timeout_secs, extend_timeout_secs, env_vars, cwd, stdin);
+    let request = build_command_request(cmd_parts, io_mode, vm_keep_timeout_secs, extend_timeout_secs, env_vars, cwd, stdin);
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
@@ -810,7 +806,6 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
 pub fn send_command_via_vsock(
     cmd_parts: &[String],
     io_mode: IoMode,
-    reuse_vm: bool,
     vm_keep_timeout_secs: Option<u32>,
     extend_timeout_secs: Option<u32>,
     sock_path: &Path,
@@ -822,8 +817,8 @@ pub fn send_command_via_vsock(
     crate::debug_epkg!("libkrun_stream: about to resolve io_mode...");
     let (use_pty, is_batch) = resolve_io_mode(io_mode);
     crate::debug_epkg!("libkrun_stream: io_mode resolved");
-    crate::debug_epkg!("libkrun_stream: io_mode={:?}, use_pty={}, is_batch={}, reuse_vm={}",
-        io_mode, use_pty, is_batch, reuse_vm);
+    crate::debug_epkg!("libkrun_stream: io_mode={:?}, use_pty={}, is_batch={}, vm_keep_timeout={:?}",
+        io_mode, use_pty, is_batch, vm_keep_timeout_secs);
     crate::debug_epkg!("libkrun_stream: connecting to vsock bridge at {:?}", sock_path);
 
     crate::debug_epkg!("libkrun_stream: about to call connect_vsock_bridge");
@@ -835,7 +830,7 @@ pub fn send_command_via_vsock(
     // We can proceed directly - handlers will skip the READY signal.
     // No additional delay needed since WaitNamedPipeA ensures the guest is ready.
     crate::debug_epkg!("libkrun_stream: connection ready, proceeding immediately");
-    let request = build_command_request(cmd_parts, io_mode, reuse_vm, vm_keep_timeout_secs, extend_timeout_secs, env_vars, cwd, stdin);
+    let request = build_command_request(cmd_parts, io_mode, vm_keep_timeout_secs, extend_timeout_secs, env_vars, cwd, stdin);
     crate::debug_epkg!("libkrun_stream: serializing to json");
     let request_json = serde_json::to_vec(&request)?;
     crate::debug_epkg!("libkrun_stream: writing {} bytes to stream", request_json.len());
@@ -1067,7 +1062,6 @@ fn handle_output_only(stream: &mut (impl Read + Write), _is_batch: bool) -> Resu
 pub fn send_command_over_stream(
     cmd_parts: &[String],
     io_mode: IoMode,
-    reuse_vm: bool,
     vm_keep_timeout_secs: Option<u32>,
     extend_timeout_secs: Option<u32>,
     env_vars: Option<&std::collections::HashMap<String, String>>,
@@ -1079,8 +1073,8 @@ pub fn send_command_over_stream(
 
     crate::debug_epkg!("libkrun_stream: send_command_over_stream starting");
     let (use_pty, is_batch) = resolve_io_mode(io_mode);
-    crate::debug_epkg!("libkrun_stream: io_mode={:?}, use_pty={}, reuse_vm={}",
-        io_mode, use_pty, reuse_vm);
+    crate::debug_epkg!("libkrun_stream: io_mode={:?}, use_pty={}, vm_keep_timeout={:?}",
+        io_mode, use_pty, vm_keep_timeout_secs);
 
     // Create TerminalGuard for PTY mode to restore terminal on exit
     let mut term_guard = if use_pty {
@@ -1090,7 +1084,7 @@ pub fn send_command_over_stream(
     };
 
     // Build and send command request
-    let request = build_command_request(cmd_parts, io_mode, reuse_vm, vm_keep_timeout_secs, extend_timeout_secs, env_vars, cwd, stdin);
+    let request = build_command_request(cmd_parts, io_mode, vm_keep_timeout_secs, extend_timeout_secs, env_vars, cwd, stdin);
     let request_json = serde_json::to_vec(&request)?;
     stream.write_all(&request_json)?;
     stream.write_all(b"\n")?;
@@ -1248,7 +1242,6 @@ pub fn send_command_over_stream(
 pub fn send_command_over_named_pipe(
     cmd_parts: &[String],
     io_mode: IoMode,
-    reuse_vm: bool,
     vm_keep_timeout_secs: Option<u32>,
     extend_timeout_secs: Option<u32>,
     env_vars: Option<&std::collections::HashMap<String, String>>,
@@ -1258,11 +1251,11 @@ pub fn send_command_over_named_pipe(
 ) -> Result<i32> {
     crate::debug_epkg!("libkrun_stream: send_command_over_named_pipe starting");
     let (_use_pty, is_batch) = resolve_io_mode(io_mode);
-    crate::debug_epkg!("libkrun_stream: io_mode={:?}, is_batch={}, reuse_vm={}",
-        io_mode, is_batch, reuse_vm);
+    crate::debug_epkg!("libkrun_stream: io_mode={:?}, is_batch={}, vm_keep_timeout={:?}",
+        io_mode, is_batch, vm_keep_timeout_secs);
 
     // Build and send command request
-    let request = build_command_request(cmd_parts, io_mode, reuse_vm, vm_keep_timeout_secs, extend_timeout_secs, env_vars, cwd, stdin);
+    let request = build_command_request(cmd_parts, io_mode, vm_keep_timeout_secs, extend_timeout_secs, env_vars, cwd, stdin);
     let request_json = serde_json::to_vec(&request)?;
     crate::debug_epkg!("libkrun_stream: [PERF] writing {} bytes to named pipe", request_json.len());
     let write_start = std::time::Instant::now();

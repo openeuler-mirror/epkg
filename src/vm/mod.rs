@@ -40,14 +40,6 @@ pub use session::{
 #[cfg(all(target_os = "linux", not(feature = "libkrun")))]
 pub use session::discover_vm_session;
 
-// is_vm_session_active is also used by run.rs on non-Linux platforms
-#[cfg(any(feature = "libkrun", not(target_os = "linux")))]
-pub use session::is_vm_session_active;
-
-// Also export is_vm_session_active for Linux (for qemu backend)
-#[cfg(all(target_os = "linux", not(feature = "libkrun")))]
-pub use session::is_vm_session_active;
-
 pub use start::cmd_vm_start;
 pub use stop::cmd_vm_stop;
 

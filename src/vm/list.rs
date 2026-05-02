@@ -25,10 +25,16 @@ pub fn cmd_vm_list(_args: &ArgMatches) -> Result<()> {
             "stale"
         };
 
+        let timeout_str = match session.config.timeout {
+            None => "-",
+            Some(0) => "never",
+            Some(n) => &format!("{}s", n),
+        };
+
         println!("{:<15} {:<8} {:<8} {:<6} {:<8} {:<10}",
                  session.env_name,
                  session.daemon_pid,
-                 session.config.timeout,
+                 timeout_str,
                  session.config.cpus,
                  format!("{}M", session.config.memory_mib),
                  status);
