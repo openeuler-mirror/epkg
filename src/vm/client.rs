@@ -377,45 +377,36 @@ pub fn try_execute_via_existing_vm_session(
 
     log::info!("vm_client: discovered existing VM session for {} (backend={})", env_name, info.backend);
 
-    // Only handle QEMU backend here (vsock)
-    // libkrun backend is handled by libkrun module
-    if info.backend != "qemu" {
-        log::debug!("vm_client: backend {} not handled here, skipping", info.backend);
-        return Ok(None);
-    }
-
-    // Connect via vsock (QEMU uses vsock:{CID} format in session)
+    // Handle both QEMU (vsock) and libkrun (Unix socket) backends
     let socket_str = info.socket_path.to_string_lossy();
-    if !socket_str.starts_with("vsock:") {
-        log::debug!("vm_client: unexpected socket_path format: {}", socket_str);
-        return Ok(None);
-    }
 
-    // Parse CID from socket_path (format: "vsock:{CID}")
-    let cid: u32 = socket_str
-        .strip_prefix("vsock:")
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| eyre::eyre!("Invalid vsock CID in socket_path: {}", socket_str))?;
-    log::debug!("vm_client: parsed CID {} from socket_path", cid);
+    // QEMU backend: vsock:{CID} format
+    if socket_str.starts_with("vsock:") {
+        // Parse CID from socket_path (format: "vsock:{CID}")
+        let cid: u32 = socket_str
+            .strip_prefix("vsock:")
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| eyre::eyre!("Invalid vsock CID in socket_path: {}", socket_str))?;
+        log::debug!("vm_client: parsed CID {} from socket_path", cid);
 
-    // Use session's configured timeout for vm_keep_timeout
-    // Per guest_daemon.rs:1713-1716: timeout=0 means "never timeout"
-    // Pass Some(0) to guest, NOT None (which triggers default 30s timeout)
-    let vm_keep_timeout_secs = Some(info.config.timeout);
+        // Use session's configured timeout for vm_keep_timeout
+        // Per guest_daemon.rs:1713-1716: timeout=0 means "never timeout"
+        // Pass Some(0) to guest, NOT None (which triggers default 30s timeout)
+        let vm_keep_timeout_secs = Some(info.config.timeout);
 
-    // Build request with env_vars and cwd
-    let request = build_extended_command_request(
-        cmd_parts,
-        io_mode,
-        true,  // reuse_session
-        vm_keep_timeout_secs,
-        None,  // user
-        env_vars,
-        cwd,
-    );
+        // Build request with env_vars and cwd
+        let request = build_extended_command_request(
+            cmd_parts,
+            io_mode,
+            true,  // reuse_session
+            vm_keep_timeout_secs,
+            None,  // user
+            env_vars,
+            cwd,
+        );
 
-    // Connect to command port (10000) using parsed CID
-    let mut stream = connect_vsock_with_retry(cid, 10000, 30)?;
+        // Connect to command port (10000) using parsed CID
+        let mut stream = connect_vsock_with_retry(cid, 10000, 30)?;
 
     log::debug!("vm_client: connected to existing QEMU VM, sending command {:?}", cmd_parts);
 
@@ -426,17 +417,63 @@ pub fn try_execute_via_existing_vm_session(
     let (use_pty, is_batch) = resolve_io_mode(io_mode);
     log::debug!("vm_client: request sent, use_pty={}, is_batch={}", use_pty, is_batch);
 
-    let exit_code = if is_batch {
-        handle_batch(&mut stream)?
-    } else {
-        handle_streaming(&mut stream, use_pty)?
-    };
+        let exit_code = if is_batch {
+            handle_batch(&mut stream)?
+        } else {
+            handle_streaming(&mut stream, use_pty)?
+        };
 
-    log::info!("vm_client: command executed via existing VM session, exit_code={}", exit_code);
-    Ok(Some(exit_code))
+        log::info!("vm_client: command executed via existing VM session (vsock), exit_code={}", exit_code);
+        return Ok(Some(exit_code));
+    }
+
+    // libkrun backend: Unix socket path
+    if info.backend == "libkrun" {
+        log::debug!("vm_client: connecting to libkrun Unix socket: {}", info.socket_path.display());
+
+        // Connect to Unix socket with retry
+        let mut stream = connect_unix_socket_with_retry(&info.socket_path, 30)?;
+
+        // Use session's configured timeout for vm_keep_timeout
+        let vm_keep_timeout_secs = Some(info.config.timeout);
+
+        // Build request with env_vars and cwd
+        let request = build_extended_command_request(
+            cmd_parts,
+            io_mode,
+            true,  // reuse_session
+            vm_keep_timeout_secs,
+            None,  // user
+            env_vars,
+            cwd,
+        );
+
+        // Send request
+        let request_bytes = serde_json::to_vec(&request)?;
+        stream.write_all(&request_bytes)?;
+        stream.write_all(b"\n")?;
+        stream.flush()?;
+
+        // Handle response
+        let (use_pty, is_batch) = resolve_io_mode(io_mode);
+        log::debug!("vm_client: request sent, use_pty={}, is_batch={}", use_pty, is_batch);
+
+        let exit_code = if is_batch {
+            handle_batch(&mut stream)?
+        } else {
+            handle_streaming(&mut stream, use_pty)?
+        };
+
+        log::info!("vm_client: command executed via existing VM session (libkrun), exit_code={}", exit_code);
+        return Ok(Some(exit_code));
+    }
+
+    // Unknown backend
+    log::debug!("vm_client: unknown backend {} or socket format {}, skipping", info.backend, socket_str);
+    Ok(None)
 }
 
-/// Build extended command request with environment variables and working directory.
+/// Connect to Unix socket with retry mechanism.
 fn build_extended_command_request(
     cmd_parts: &[String],
     io_mode: IoMode,

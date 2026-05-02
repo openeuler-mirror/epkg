@@ -1904,6 +1904,7 @@ pub fn run_command_in_krun(
     env_root: &Path,
     run_options: &RunOptions,
     guest_cmd_path: &Path,
+    #[cfg(target_os = "linux")] vm_daemon_ready_fd: Option<&std::os::fd::OwnedFd>,
 ) -> Result<()> {
     crate::debug_epkg!("START run_command_in_krun");
     // NOTE: On Linux, bind mounts for home_epkg/home_cache/opt_epkg are handled
@@ -2051,6 +2052,25 @@ pub fn run_command_in_krun(
             // Register VM session (if not already registered)
             let env_name = &run_options.env_name;
             crate::vm::register_vm_session_simple(env_root, env_name, &vsock_sock_path)?;
+
+            #[cfg(target_os = "linux")]
+            {
+                // Signal VM ready to parent via pipe (same as qemu backend)
+                if let Some(fd) = vm_daemon_ready_fd {
+                    let signal = b"READY\n";
+                    match nix::unistd::write(fd, signal) {
+                        Ok(n) if n == signal.len() => {
+                            log::info!("libkrun: daemon mode - signaled VM ready to parent via pipe");
+                        }
+                        Ok(n) => {
+                            log::warn!("libkrun: daemon mode - partial write to ready pipe: {} bytes", n);
+                        }
+                        Err(e) => {
+                            log::error!("libkrun: daemon mode - failed to write to ready pipe: {}", e);
+                        }
+                    }
+                }
+            }
 
             // Store session for reuse (same mechanism as reuse_vm)
             #[cfg(not(target_os = "linux"))]

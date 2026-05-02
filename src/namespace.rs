@@ -692,6 +692,13 @@ fn child_mount_and_exec(mut context: Box<UnifiedChildContext>) -> Result<()> {
     // Mount all specifications
     crate::mount::mount_batch_specs(&context.mount_specs, &context.env_root, context.isolate_mode)?;
     setup_isolate_mode(&mut context)?;
+
+    // VM mode: VMM already executed command inside VM and returned.
+    // No need to exec anything else - just exit with success.
+    if context.isolate_mode == IsolateMode::Vm {
+        return Ok(());
+    }
+
     prepare_and_execute_command(
         &context.command,
         &context.args,

@@ -63,10 +63,21 @@ pub fn try_vmm_backends(
     for backend in &order {
         match backend.as_str() {
             "libkrun" => {
-                if let Err(e) = try_krun_backend(env_root, run_options, guest_command) {
-                    log::warn!("libkrun backend failed, will try next VMM if any: {}", e);
-                    last_err = Some(e);
-                    continue;
+                #[cfg(target_os = "linux")]
+                {
+                    if let Err(e) = try_krun_backend(env_root, run_options, guest_command, vm_daemon_ready_fd) {
+                        log::warn!("libkrun backend failed, will try next VMM if any: {}", e);
+                        last_err = Some(e);
+                        continue;
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    if let Err(e) = try_krun_backend(env_root, run_options, guest_command) {
+                        log::warn!("libkrun backend failed, will try next VMM if any: {}", e);
+                        last_err = Some(e);
+                        continue;
+                    }
                 }
                 return Ok(());
             }
@@ -134,11 +145,16 @@ pub fn try_krun_backend(
     env_root: &Path,
     run_options: &RunOptions,
     guest_command: &Path,
+    #[cfg(target_os = "linux")] vm_daemon_ready_fd: Option<&OwnedFd>,
 ) -> Result<()> {
     #[cfg(feature = "libkrun")]
     {
         log::debug!("Trying VMM backend: libkrun");
-        match crate::libkrun::run_command_in_krun(env_root, run_options, guest_command) {
+        #[cfg(target_os = "linux")]
+        let result = crate::libkrun::run_command_in_krun(env_root, run_options, guest_command, vm_daemon_ready_fd);
+        #[cfg(not(target_os = "linux"))]
+        let result = crate::libkrun::run_command_in_krun(env_root, run_options, guest_command);
+        match result {
             Ok(()) => Ok(()),
             Err(e) => {
                 let msg = e.to_string();
@@ -154,6 +170,9 @@ pub fn try_krun_backend(
     }
     #[cfg(not(feature = "libkrun"))]
     {
+        #[cfg(target_os = "linux")]
+        let _ = (env_root, run_options, guest_command, vm_daemon_ready_fd);
+        #[cfg(not(target_os = "linux"))]
         let _ = (env_root, run_options, guest_command);
         log::debug!("VMM backend 'libkrun' requested but libkrun feature is disabled; skipping");
         Err(eyre::eyre!("libkrun feature disabled"))

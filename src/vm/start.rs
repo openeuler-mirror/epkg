@@ -99,22 +99,15 @@ fn vm_start(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()> {
     // - Linux: namespace setup + bind mounts + QEMU/libkrun
     // - macOS/Windows: direct libkrun with virtiofs mounts
     // When dummy command returns with exit code 0, VM is ready
-    // Returns Some(child_pid) for background mode - this is the PID that supervises the VM
-    let child_pid = fork_and_execute(env_root, &run_options)?;
+    // Note: returns Some(child_pid) for background mode, but we don't need it -
+    // the child process is supervising the VM, session is registered by child.
+    fork_and_execute(env_root, &run_options)?;
 
-    // Register session with child PID (the process that supervises QEMU)
-    // Note: The parent process (calling register_vm_session) will exit soon,
-    // but the child (child_pid) continues to supervise the VM.
-    let daemon_pid = child_pid.map(|p| p as u32).unwrap_or_else(std::process::id);
-    #[cfg(any(feature = "libkrun", target_os = "linux"))]
-    {
-        // Generate CID from daemon_pid + 3 (CID must be >= 3)
-        let guest_cid = daemon_pid + 3;
-        let socket_path = std::path::PathBuf::from(format!("vsock:{}", guest_cid));
-        crate::vm::register_vm_session(env_root, env_name, &socket_path, "qemu", &config, daemon_pid)?;
-    }
-
-    log::info!("vm_start: VM session registered for {} (daemon_pid={})", env_name, daemon_pid);
+    // Note: VM session is already registered by child process (via register_vm_session_simple
+    // in libkrun/core.rs or qemu.rs). The session file at ~/.epkg/run/vm-sessions/ is
+    // visible to parent because home_epkg is not namespace-isolated for the parent.
+    // Parent just needs to return success; child is supervising the VM.
+    log::info!("vm_start: VM started for {} (supervised by child process)", env_name);
     Ok(())
 }
 
