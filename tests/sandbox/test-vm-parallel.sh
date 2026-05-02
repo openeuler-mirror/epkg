@@ -42,12 +42,13 @@ fi
 echo ""
 echo "3. Running VM2 (should reuse VM1 session)"
 OUTPUT=$($EPKG -e $ENV run --isolate=vm --vmm=qemu --vm-keep-timeout=60 echo "vm2-test" 2>&1)
-echo "   Output: $OUTPUT"
+echo "   Output: '$OUTPUT'"
 echo "   Length: ${#OUTPUT}"
+echo "   Line count: $(echo "$OUTPUT" | wc -l)"
 
 # Debug: show hex dump of OUTPUT
 echo "   Hex dump of OUTPUT:"
-printf '%s' "$OUTPUT" | xxd | head -2
+printf '%s' "$OUTPUT" | xxd | head -3
 
 if [ "$OUTPUT" = "vm2-test" ]; then
     echo "   SUCCESS: VM2 reused VM1 session"
@@ -55,6 +56,28 @@ else
     echo "   ERROR: VM2 output mismatch"
     echo "   Expected 'vm2-test' hex:"
     printf '%s' "vm2-test" | xxd | head -2
+
+    # Additional debug: check for common issues
+    echo "   Checking for carriage return (\\r):"
+    if printf '%s' "$OUTPUT" | grep -q $'\r'; then
+        echo "   FOUND: OUTPUT contains carriage return!"
+    else
+        echo "   No carriage return found"
+    fi
+
+    echo "   Checking for ANSI escape codes:"
+    if printf '%s' "$OUTPUT" | grep -q $'\033'; then
+        echo "   FOUND: OUTPUT contains ANSI escape codes!"
+    else
+        echo "   No ANSI codes found"
+    fi
+
+    echo "   Trailing whitespace stripped OUTPUT:"
+    TRIMMED=$(echo "$OUTPUT" | tr -d '[:space:]')
+    echo "   '$TRIMMED'"
+    if [ "$TRIMMED" = "vm2-test" ]; then
+        echo "   Note: OUTPUT matches after stripping all whitespace"
+    fi
 fi
 
 echo ""
@@ -64,8 +87,15 @@ echo "   QEMU processes: $QEMU_COUNT"
 
 echo ""
 echo "5. Running VM3"
-OUTPUT=$($EPKG -e $ENV run --isolate=vm --vmm=qemu --vm-keep-timeout=60 echo "vm3-test")
-echo "   Output: $OUTPUT"
+OUTPUT3=$($EPKG -e $ENV run --isolate=vm --vmm=qemu --vm-keep-timeout=60 echo "vm3-test" 2>&1)
+echo "   Output: '$OUTPUT3'"
+echo "   Length: ${#OUTPUT3}"
+
+if [ "$OUTPUT3" = "vm3-test" ]; then
+    echo "   SUCCESS: VM3 reused VM1 session"
+else
+    echo "   ERROR: VM3 output mismatch"
+fi
 
 # Cleanup
 echo ""
