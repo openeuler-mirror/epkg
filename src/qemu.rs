@@ -363,6 +363,7 @@ fn start_virtiofsd_at(
     is_root: bool,
     translate_uid: &[String],
     translate_gid: &[String],
+    reuse_session: bool,  // For process group detachment
 ) -> Result<(tempfile::TempDir, std::process::Child, std::path::PathBuf)> {
     use std::fs::File;
     use std::process::{Command, Stdio};
@@ -422,6 +423,21 @@ fn start_virtiofsd_at(
                   })
                   .collect::<Vec<_>>()
                   .join(" "));
+
+    // For reuse_session mode: create new process group so virtiofsd survives parent exit
+    if reuse_session {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+            use nix::unistd::setsid;
+            unsafe {
+                virtiofsd_cmd.pre_exec(|| {
+                    setsid().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                    Ok(())
+                });
+            }
+        }
+    }
 
     let mut virtiofsd_child = virtiofsd_cmd
         .spawn()
@@ -674,6 +690,7 @@ fn setup_rootfs_mode(
     is_root: bool,
     translate_uid: &[String],
     translate_gid: &[String],
+    reuse_session: bool,
 ) -> Result<RootFsMode> {
     // Check env var for explicit rootfs selection (EPKG_VM_ROOTFS=9p or virtiofs)
     if let Ok(rootfs_choice) = std::env::var("EPKG_VM_ROOTFS") {
@@ -699,7 +716,7 @@ fn setup_rootfs_mode(
 
     // Try virtiofsd if available
     if let Some(virtiofsd_bin) = virtiofsd_bin {
-        match start_virtiofsd_at(env_root, virtiofsd_bin, virtiofsd_log_path, is_root, translate_uid, translate_gid) {
+        match start_virtiofsd_at(env_root, virtiofsd_bin, virtiofsd_log_path, is_root, translate_uid, translate_gid, reuse_session) {
             Ok((tmpdir, child, path)) => {
                 return Ok(RootFsMode::Virtiofs(Some((tmpdir, child)), path));
             }
@@ -736,6 +753,7 @@ fn spawn_qemu(
     vm_memory_mb: u32,
     init_cmd: Option<&str>,
     init_user: Option<&str>,
+    reuse_session: bool,  // Added parameter for session reuse mode
 ) -> Result<std::process::Child> {
     use std::process::Stdio;
 
@@ -755,6 +773,23 @@ fn spawn_qemu(
         init_cmd,
         init_user,
     );
+
+    // For reuse_session mode: create new process group so QEMU survives parent exit
+    // When parent exits, it sends SIGTERM to process group. New process group avoids this.
+    if reuse_session {
+        // On Linux, create new session with setsid() to detach from parent's process group
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+            use nix::unistd::setsid;
+            unsafe {
+                qemu_cmd.pre_exec(|| {
+                    setsid().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                    Ok(())
+                });
+            }
+        }
+    }
 
     // Conditionally log QEMU output based on RUST_LOG level
     // If debug/trace logging is enabled, redirect to log file for debugging
@@ -841,7 +876,8 @@ fn handle_guest_execution(
         // This ensures subsequent commands can connect to a working VM
         let env_name = &crate::models::config().common.env_name;
         let socket_path = std::path::PathBuf::from(format!("vsock:{}", guest_cid));
-        let daemon_pid = std::process::id();
+        // Use QEMU's PID as daemon_pid so session stays valid while QEMU is alive
+        let daemon_pid = qemu_child.id();
         let config = crate::vm::VmConfig {
             timeout: vm_keep_timeout.unwrap_or(0),
             extend: 10,
@@ -934,7 +970,8 @@ fn handle_guest_execution(
         if vm_keep_timeout.is_some() {
             let env_name = &crate::models::config().common.env_name;
             let socket_path = std::path::PathBuf::from(format!("vsock:{}", guest_cid));
-            let daemon_pid = std::process::id();
+            // Use QEMU's PID as daemon_pid so session stays valid while QEMU is alive
+            let daemon_pid = qemu_child.id();
             let config = crate::vm::VmConfig {
                 timeout: vm_keep_timeout.unwrap_or(0),
                 extend: 10,
@@ -957,7 +994,14 @@ fn handle_guest_execution(
             user,
         ) {
             Ok(cmd_exit_code) => {
-                log::debug!("qemu: command completed with exit code {}, waiting for QEMU to exit", cmd_exit_code);
+                log::debug!("qemu: command completed with exit code {}", cmd_exit_code);
+                // When reuse_session=true, guest daemon handles idle timeout.
+                // Don't wait for QEMU here - caller will handle cleanup decision.
+                if reuse_session {
+                    return Ok(cmd_exit_code);
+                }
+
+                // Non-reuse mode: wait for QEMU to exit
                 let _ = qemu_child
                     .wait()
                     .map_err(|e| eyre::eyre!("Failed to wait for QEMU process: {}", e))?;
@@ -1045,6 +1089,9 @@ fn setup_qemu_vm(
     let translate_uid = crate::auto_idmap::merge_idmap_specs(auto_uid, run_options.translate_uid.clone());
     let translate_gid = crate::auto_idmap::merge_idmap_specs(auto_gid, run_options.translate_gid.clone());
 
+    // Determine if VM should continue running for reuse
+    let reuse_session = run_options.vm_keep_timeout.is_some();
+
     let rootfs_mode = setup_rootfs_mode(
         env_root,
         existing_socket_path,
@@ -1053,6 +1100,7 @@ fn setup_qemu_vm(
         host_uid == 0,
         &translate_uid,
         &translate_gid,
+        reuse_session,
     )?;
 
     Ok(VmSetup {
@@ -1121,6 +1169,9 @@ pub fn run_command_in_qemu(
     let init_cmd_append = if use_cmdline_mode { Some(init_cmd.as_str()) } else { None };
     let init_user_append = if use_cmdline_mode { run_options.user.as_deref() } else { None };
 
+    // Determine if VM should continue running for reuse
+    let reuse_session = run_options.vm_keep_timeout.is_some();
+
     let mut qemu_child = match spawn_qemu(
         &setup.kernel,
         &setup.initrd,
@@ -1136,6 +1187,7 @@ pub fn run_command_in_qemu(
         vm_memory_mb,
         init_cmd_append,
         init_user_append,
+        reuse_session,  // Pass reuse_session for process group handling
     ) {
         Ok(child) => child,
         Err(e) => {
@@ -1169,7 +1221,7 @@ pub fn run_command_in_qemu(
         }
     };
 
-    // For vm_daemon mode: child keeps running, waiting for QEMU to complete
+    // For vm_daemon mode or reuse_session: VM continues running for reuse
     // cleanup_virtiofsd_child and exit happen after QEMU exits (VM timeout)
     if run_options.vm_daemon {
         log::info!("qemu: daemon mode - waiting for QEMU to complete (VM timeout)");
@@ -1180,6 +1232,25 @@ pub fn run_command_in_qemu(
         cleanup_virtiofsd_child(setup.rootfs_mode);
         // Exit with 0 (success)
         std::process::exit(0);
+    }
+
+    // For reuse_session mode: VM continues for reuse, don't cleanup virtiofsd
+    // Exit immediately with command's exit code, VM stays alive for other processes
+    if reuse_session {
+        log::info!("qemu: reuse_session mode - VM continues running (timeout {}s), exiting with code {}",
+            run_options.vm_keep_timeout.unwrap_or(0), exit_code);
+        // Don't cleanup virtiofsd - VM needs it for subsequent connections
+        // CRITICAL: "forget" the virtiofsd guard to prevent TempDir from being deleted
+        // When TempDir is dropped, it deletes the socket directory, breaking QEMU
+        if let RootFsMode::Virtiofs(Some((tmpdir, child)), _) = setup.rootfs_mode {
+            // Forget tmpdir to prevent directory cleanup
+            std::mem::forget(tmpdir);
+            // Forget child handle (virtiofsd continues running as orphan)
+            std::mem::forget(child);
+            log::debug!("qemu: forgot virtiofsd guard for reuse session");
+        }
+        // Don't wait for QEMU - let guest daemon handle idle timeout
+        std::process::exit(exit_code);
     }
 
     cleanup_virtiofsd_child(setup.rootfs_mode);

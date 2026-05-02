@@ -1972,13 +1972,15 @@ fn run_vsock_server() -> Result<()> {
             None => {
                 // Timeout expired
                 let active = state.active_connections.load(Ordering::SeqCst);
-                if active == 0 && !state.shutdown_requested.load(Ordering::SeqCst) {
-                    // No active connections, idle timeout expired, no shutdown requested
+                // Only power off if this was an idle timeout (not active poll interval)
+                // If active > 0 or we used ACTIVE_POLL_INTERVAL_MS, continue looping
+                if active == 0 && accept_timeout_ms > ACTIVE_POLL_INTERVAL_MS && !state.shutdown_requested.load(Ordering::SeqCst) {
+                    // No active connections, real idle timeout expired (not active poll), no shutdown requested
                     kmsg_write("<6>run_vsock_server: idle timeout with no connections, powering off\n");
                     log::debug!("vm-daemon: idle timeout, powering off guest");
                     break;
                 }
-                // Otherwise: continue loop (active connections or shutdown pending)
+                // Otherwise: continue loop (active connections, short poll expired, or shutdown pending)
             }
         }
 
@@ -2090,12 +2092,14 @@ fn run_vsock_server_with_existing_listener(
             None => {
                 // Timeout expired
                 let active = state.active_connections.load(Ordering::SeqCst);
-                if active == 0 && !state.shutdown_requested.load(Ordering::SeqCst) {
-                    // No active connections, idle timeout expired
+                // Only power off if this was an idle timeout (not active poll interval)
+                if active == 0 && accept_timeout_ms > ACTIVE_POLL_INTERVAL_MS && !state.shutdown_requested.load(Ordering::SeqCst) {
+                    // No active connections, real idle timeout expired (not active poll)
                     kmsg_write("<6>run_vsock_server_with_existing_listener: idle timeout, powering off\n");
                     log::debug!("vm-daemon: idle timeout, powering off guest");
                     break;
                 }
+                // Otherwise: continue loop (active connections, short poll expired, or shutdown pending)
             }
         }
 
