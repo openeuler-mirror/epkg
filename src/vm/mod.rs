@@ -33,7 +33,7 @@ pub use session::{register_vm_session, unregister_vm_session, VmConfig};
 // These are only available/used with libkrun feature (also used by qemu on Linux)
 #[cfg(feature = "libkrun")]
 pub use session::{
-    VmSessionInfo, discover_vm_session, register_vm_session_simple, vm_socket_path_for_env,
+    VmSessionInfo, discover_vm_session, register_vm_session_with_timeout, vm_socket_path_for_env,
 };
 
 // For Linux (qemu backend without libkrun feature), export discover_vm_session

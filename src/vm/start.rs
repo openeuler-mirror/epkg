@@ -103,7 +103,7 @@ fn vm_start(env_root: &Path, env_name: &str, config: VmConfig) -> Result<()> {
     // the child process is supervising the VM, session is registered by child.
     fork_and_execute(env_root, &run_options)?;
 
-    // Note: VM session is already registered by child process (via register_vm_session_simple
+    // Note: VM session is already registered by child process (via register_vm_session_with_timeout
     // in libkrun/core.rs or qemu.rs). The session file at ~/.epkg/run/vm-sessions/ is
     // visible to parent because home_epkg is not namespace-isolated for the parent.
     // Parent just needs to return success; child is supervising the VM.

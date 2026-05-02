@@ -279,10 +279,17 @@ pub fn register_vm_session(
 
 /// Simple registration for libkrun's existing path.
 /// Uses default config and takes env_name as parameter.
-/// For libkrun, the current process is the daemon (VM runs in-process), so we use std::process::id().
+/// Register VM session with explicit timeout.
+/// Used when vm start specifies timeout that should be persisted in session.
 #[cfg(feature = "libkrun")]
-pub fn register_vm_session_simple(env_root: &Path, env_name: &str, socket_path: &Path) -> Result<()> {
-    let config = VmConfig::default();
+pub fn register_vm_session_with_timeout(
+    env_root: &Path,
+    env_name: &str,
+    socket_path: &Path,
+    timeout: Option<u32>,
+) -> Result<()> {
+    let mut config = VmConfig::default();
+    config.timeout = timeout;
     let daemon_pid = std::process::id();
     register_vm_session(env_root, env_name, socket_path, "libkrun", &config, daemon_pid)
 }
