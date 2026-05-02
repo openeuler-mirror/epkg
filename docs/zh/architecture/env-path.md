@@ -327,28 +327,20 @@ epkg install jq                 # 安装到 myenv
 2. **dirs.rs 支持 EPKG_HOME/EPKG_USER** ✓：计算 host 侧路径
 3. **vm.sh mount 到相同路径** ✓：`$HOME/.epkg:/home/$EPKG_USER/.epkg`
 
-## 待完善项
-
-1. **更多测试脚本适配 EPKG_HOME**
-
 ## VM 模式 Mounts 统一方案
 
-### 问题
+### 核心原则
 
-不同 VMM backend 的 virtiofs mounts 方案不一致：
-- QEMU: 只共享 env_root，VM 内看不到 host 的 home_epkg/home_cache/opt_epkg
-- libkrun: 添加额外的 virtiofs mounts，但需要为每个目录启动独立的 virtiofs device
-
-### 统一方案
+VM 模式 mounts 遵循以下核心设计原则：
 
 **Linux (QEMU + libkrun)**：
-- 使用 bind mounts 将 home_epkg/home_cache/opt_epkg 挂载到 env_root 内对应路径
-- 然后启动单个 virtiofs 共享 env_root
-- VM guest 自然能看到这些目录
-- 需要 CAP_SYS_ADMIN capability 执行 bind mounts
+- 使用 bind mounts 将 `home_epkg/home_cache/opt_epkg` 挂载到 `env_root` 内对应路径
+- 然后使用单个 virtiofs 共享整个 `env_root`
+- VM guest 通过 rootfs 自然访问这些目录，无需额外的 virtiofs 设备
+- bind mounts 在 namespace 中完成，需要 `CAP_SYS_ADMIN` capability
 
 **macOS/Windows (libkrun)**：
-- 不支持 bind mounts
+- 不支持 bind mounts（无 Linux namespace 机制）
 - 使用多个 virtiofs mounts（每个目录一个）
 - 通过 kernel cmdline `epkg.vol_N=tag:guest_path[:ro]` 配置
 - guest init 在启动时挂载这些 volumes
@@ -358,8 +350,8 @@ epkg install jq                 # 安装到 myenv
 | 函数 | 文件 | 说明 |
 |------|------|------|
 | `vm_bind_mount_spec_strings()` | src/namespace.rs | 生成 bind mount spec strings |
-| `setup_qemu_vm()` | src/qemu.rs | TODO: 调用 bind mounts |
-| `run_command_in_krun()` | src/libkrun/core.rs | TODO: Linux 上调用 bind mounts |
+| `setup_qemu_vm()` | src/qemu.rs | 使用 bind mounts (通过 namespace.rs 的 `vm_mount_spec_strings()`) |
+| `run_command_in_krun()` | src/libkrun/core.rs | Linux: 依赖 namespace.rs 的 bind mounts; macOS/Windows: 多 virtiofs mounts |
 | `build_virtiofs_mount_specs()` | src/libkrun/core.rs | macOS/Windows 生成多个 virtiofs mounts |
 | `mount_virtiofs_volumes()` | src/busybox/init.rs | guest init 挂载 virtiofs volumes |
 
