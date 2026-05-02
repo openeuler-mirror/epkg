@@ -150,6 +150,7 @@ mod lua;
 #[cfg(any(unix, windows))]
 mod risks;
 mod run;
+mod mount_specs;
 #[cfg(target_os = "linux")]
 mod namespace;
 #[cfg(target_os = "linux")]

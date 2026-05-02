@@ -342,22 +342,24 @@ pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> Pr
                 }
             }
             IsolateMode::Fs => mount_spec_strings.extend(fs_mount_spec_strings(env_root, is_brew_env)),
-            IsolateMode::Vm => mount_spec_strings.extend(vm_mount_spec_strings()),
+            IsolateMode::Vm => {
+                // Linux bind mounts: add make-rprivate, then policy specs
+                mount_spec_strings.push("make-rprivate://".to_string());
+                mount_spec_strings.extend(crate::mount_specs::build_vm_mount_policy(run_options));
+            }
         }
 
-        // Add user-provided mount specifications
-        mount_spec_strings.extend(run_options.effective_sandbox.mount_specs.iter().cloned());
+        // Add user-provided mount specifications (for Env/Fs modes; Vm already handled in build_vm_mount_policy)
+        if effective_isolate_mode != IsolateMode::Vm {
+            mount_spec_strings.extend(run_options.effective_sandbox.mount_specs.iter().cloned());
+        }
 
-        // In Fs/Env mode, bind-mount current working directory to sandbox if not chdir_to_env_root
-        // This ensures scripts and files in cwd are accessible after pivot_root
-        // Use '//' prefix for target to mount to host path (not inside env_root)
+        // Bind-mount cwd for Env/Fs modes (Vm already handled in build_vm_mount_policy)
         if effective_isolate_mode != IsolateMode::Vm && !run_options.chdir_to_env_root {
             if let Ok(cwd) = std::env::current_dir() {
-                // Bind-mount cwd to same path inside sandbox so commands can access it
                 let cwd_str = cwd.to_string_lossy();
                 if cwd.is_absolute() && cwd.exists() {
-                    trace!("{:?} mode: adding bind mount for current working directory: {}", effective_isolate_mode, cwd_str);
-                    // Format: cwd://cwd means target is host path, not env_root-relative
+                    trace!("{:?} mode: adding bind mount for cwd: {}", effective_isolate_mode, cwd_str);
                     mount_spec_strings.push(format!("{}://{}", cwd_str, cwd_str));
                 }
             }
@@ -958,17 +960,12 @@ fn fs_mount_spec_strings(env_root: &Path, is_brew_env: bool) -> Vec<String> {
     // the env_root's home directory structure (which contains linuxbrew).
     if is_brew_env {
         // Only mount opt_epkg (needed for package operations)
-        let opt_epkg_opts = if crate::utils::should_mount_opt_epkg_readonly() {
-            "ro,try"
-        } else {
-            "try"
-        };
-        specs.push(format!("{}:{}", dirs().opt_epkg.display(), opt_epkg_opts));
+        specs.push(format!("{}:ro,try", dirs().opt_epkg.display()));
         // Mount epkg binary dir if needed
-        add_epkg_bin_dir_mount(&mut specs);
+        crate::mount_specs::add_epkg_bin_dir_mount(&mut specs);
     } else {
         // Standard environments: add all epkg mount specs
-        add_epkg_mount_spec_strings(&mut specs);
+        crate::mount_specs::add_epkg_mount_specs(&mut specs);
     }
 
     // For brew environments in Fs mode, the HOMEBREW_PREFIX symlinks are already
@@ -985,126 +982,6 @@ fn fs_mount_spec_strings(env_root: &Path, is_brew_env: bool) -> Vec<String> {
     }
 
     specs
-}
-
-pub fn vm_mount_spec_strings() -> Vec<String> {
-    let mut spec_strings = Vec::new();
-
-    // Always make mounts private to prevent mount leaks to parent namespace.
-    // This ensures that when epkg exits, Linux automatically cleans up all mounts.
-    spec_strings.push("make-rprivate://".to_string());
-
-    // Bind mount home_epkg/home_cache/opt_epkg under env_root so virtiofs exposes to guest
-    add_epkg_mount_spec_strings(&mut spec_strings);
-
-    // Mount host /lib/modules read-only for kernel module loading (e.g., virtio_net)
-    // only when it actually exists on the host. Keep this best-effort and avoid
-    // noisy mount failures on minimal systems where /lib/modules is absent.
-    if std::path::Path::new("/lib/modules").exists() {
-        spec_strings.push("/lib/modules:ro,try".to_string());
-    }
-
-    // Auto-mount Windows drives from /mnt (like WSL2) when running on Windows
-    spec_strings.extend(windows_drive_mount_specs());
-
-    spec_strings
-}
-
-/// Bind mount spec strings for VM mode (including make-rprivate).
-/// Used by QEMU/libkrun to bind mount home_epkg/home_cache/opt_epkg into env_root
-/// before starting virtiofsd, so VM guest can access them via single virtiofs.
-/// make-rprivate prevents bind mounts from leaking to parent mount namespace.
-///
-/// Detect Windows drives mounted under /mnt (like WSL2) and generate mount specs.
-/// This allows 'epkg.exe run' on Windows to automatically access C:, D:, etc.
-/// Returns mount specs like "/mnt/c:try" for each drive letter found.
-fn windows_drive_mount_specs() -> Vec<String> {
-    let mut specs = Vec::new();
-    let mnt_path = std::path::Path::new("/mnt");
-
-    if !mnt_path.exists() {
-        return specs;
-    }
-
-    let entries = match fs::read_dir(mnt_path) {
-        Ok(e) => e,
-        Err(_) => return specs,
-    };
-
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = match name.to_str() {
-            Some(s) => s,
-            None => continue,
-        };
-
-        // Check if entry is a single letter (drive letter like 'c', 'd', etc.)
-        if name_str.len() != 1 {
-            continue;
-        }
-
-        let c = name_str.chars().next().unwrap();
-        if !c.is_ascii_alphabetic() {
-            continue;
-        }
-
-        // Verify it's a directory
-        let metadata = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        if !metadata.is_dir() {
-            continue;
-        }
-
-        // Generate mount spec: /mnt/c:try
-        // Parser auto-prepends '@' to target, binding to env_root/mnt/c
-        let mount_path = format!("/mnt/{}", name_str);
-        specs.push(format!("{}:try", mount_path));
-        trace!("Added Windows drive mount spec: {}", mount_path);
-    }
-
-    specs
-}
-
-/// Add mount for epkg binary dir so guest init can find epkg for vm-daemon.
-/// When epkg is outside self env (e.g. target/debug), bind-mount its dir into env.
-fn add_epkg_bin_dir_mount(spec_strings: &mut Vec<String>) {
-    let Ok(epkg_exe) = std::env::current_exe() else { return };
-    let epkg_bin_dir = match epkg_exe.parent() {
-        Some(p) => p.to_path_buf(),
-        None => return,
-    };
-
-    // Skip if epkg is already inside self env (e.g. installed via epkg install)
-    if epkg_bin_dir.starts_with(dirs().home_epkg.clone()) {
-        return;
-    }
-    if epkg_bin_dir.starts_with(dirs().opt_epkg.clone()) {
-        return;
-    }
-
-    // Mount spec: SANDBOX_DIR:OPTIONS
-    // Parser auto-prepends '@' to target via normalize_target_path()
-    spec_strings.push(format!("{}:ro", epkg_bin_dir.display()));
-}
-
-fn add_epkg_mount_spec_strings(spec_strings: &mut Vec<String>) {
-    // Mount spec format: SANDBOX_DIR:OPTIONS
-    // Parser auto-prepends '@' to target via normalize_target_path(),
-    // so target becomes env_root/SANDBOX_DIR for both Fs and VM modes.
-    spec_strings.push(format!("{}:try", dirs().home_epkg.display()));
-    spec_strings.push(format!("{}:try", dirs().home_cache.display()));
-    // Mount /opt/epkg read-only if we're not root on host.
-    // In VM sandbox, we appear as root but host filesystem permissions still apply,
-    // so write attempts to /opt/epkg/cache would fail with EPERM.
-    let opt_epkg_opts = if crate::utils::should_mount_opt_epkg_readonly() {
-        "ro,try"
-    } else {
-        "try"
-    };
-    spec_strings.push(format!("{}:{}", dirs().opt_epkg.display(), opt_epkg_opts));
-    add_epkg_bin_dir_mount(spec_strings);
 }
 
 /// Execute unshare with comprehensive error handling

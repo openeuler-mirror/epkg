@@ -501,7 +501,7 @@ fn df_resolve_mounts(options: &DfOptions) -> Result<Vec<(String, String, String)
         } else {
             #[cfg(windows)]
             {
-                let root = win_df::volume_root_for_path(path);
+                let root = win_df::volume_root_for_path(&path);
                 let mut root_str = root.to_string_lossy().into_owned();
                 if !root_str.ends_with('\\') {
                     root_str.push('\\');

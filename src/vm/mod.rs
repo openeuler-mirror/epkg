@@ -7,7 +7,7 @@
 //! - `vm status` - Show VM status (YAML) (all platforms)
 //!
 //! Session management (session.rs) is used by VM backends (libkrun, qemu) for
-//! cross-process VM discovery. This is needed on all platforms where VM backends run.
+//! cross-platform VM discovery. This is needed on all platforms where VM backends run.
 //!
 //! Guest daemon (guest_daemon.rs) runs inside the VM to handle commands from host.
 

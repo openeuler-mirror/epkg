@@ -743,229 +743,86 @@ fn build_libkrun_config(
 /// - Explicit directory containment (B is subdirectory of A)
 /// - Symlink containment (home_epkg is symlink to /some/dir, store is inside /some/dir)
 #[cfg(feature = "libkrun")]
+#[allow(unused_variables)]  // env_root, run_options unused on Linux but used on macOS/Windows
 fn build_virtiofs_mount_specs(env_root: &Path, run_options: &RunOptions) -> Vec<(String, String, String, bool)> {
-    use std::fs;
-    use crate::models::dirs;
-    #[cfg(not(target_os = "windows"))]
-    use crate::models::config;
-
-    // TODO: On Linux, bind mounts should be performed before VM start,
-    // then single virtiofs sharing env_root suffices.
-    // Currently we use multiple virtiofs mounts on all platforms.
-
-    let mut mounts: Vec<(String, String, String, bool)> = Vec::new();
-    // Track canonical paths of mounted directories.
-    // Used to detect containment: if canonical(B) starts with canonical(A), skip B.
-    let mut mounted_canonicals: Vec<std::path::PathBuf> = Vec::new();
-
-    // Helper to check if a canonical path is covered by any already-mounted path.
-    fn is_path_covered(canonical: &std::path::PathBuf, mounted: &[std::path::PathBuf]) -> bool {
-        mounted.iter().any(|m| canonical == m || canonical.starts_with(m))
-    }
-
-    // Helper to add a mount if path is a directory and not covered by existing mounts.
-    // All mounts are rw; permission control is done by host kernel via virtiofs.
-    fn do_add_mount(
-        host_path: &Path,
-        guest_path_opt: Option<&Path>,
-        read_only: bool,
-        try_only: bool,
-        mounts: &mut Vec<(String, String, String, bool)>,
-        mounted_canonicals: &mut Vec<std::path::PathBuf>,
-    ) {
-        let path_str = host_path.to_string_lossy().to_string();
-
-        // Skip if not a directory (virtiofs only supports directories)
-        let _meta = match fs::metadata(host_path) {
-            Ok(m) if m.is_dir() => m,
-            Ok(_) => {
-                log::info!("libkrun: skipping non-directory mount: {}", host_path.display());
-                return;
-            }
-            Err(e) if !try_only => {
-                log::warn!("libkrun: cannot access mount path {}: {}", host_path.display(), e);
-                return;
-            }
-            Err(_) => return, // try_only=true, silently skip
-        };
-
-        // Canonicalize to resolve symlinks
-        let canonical = match host_path.canonicalize() {
-            Ok(c) => c,
-            Err(e) => {
-                log::warn!("libkrun: cannot canonicalize {}: {}", host_path.display(), e);
-                return;
-            }
-        };
-
-        // Skip if already covered by a previous mount (containment detection)
-        if is_path_covered(&canonical, mounted_canonicals) {
-            log::debug!("libkrun: skipping mount (covered by existing): {}", host_path.display());
-            return;
-        }
-
-        // Determine guest path: use host path for path consistency (unless explicitly provided)
-        let guest = guest_path_opt
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| {
-                // On Windows, convert host path to a valid Linux guest path.
-                #[cfg(target_os = "windows")]
-                { windows_path_to_linux_guest(&path_str) }
-                #[cfg(not(target_os = "windows"))]
-                { path_str.clone() }
-            });
-
-        // Generate a unique tag from the path
-        let tag = generate_virtiofs_tag(host_path);
-        log::debug!("libkrun: adding virtiofs mount: {} -> {} (guest: {}) ({})",
-                   host_path.display(), tag, guest, if read_only { "ro" } else { "rw" });
-        mounts.push((tag, host_path.to_string_lossy().to_string(), guest, read_only));
-        mounted_canonicals.push(canonical);
-    }
-
-    // Add user-provided mount specs FIRST, before automatic mounts.
-    for mount_spec_str in &run_options.effective_sandbox.mount_specs {
-        if let Some((host_path, guest_path, read_only, try_only)) = parse_mount_spec_for_virtiofs(mount_spec_str, env_root) {
-            do_add_mount(&host_path, Some(&guest_path), read_only, try_only, &mut mounts, &mut mounted_canonicals);
-        }
-    }
-
-    // Add epkg system directories following path consistency rule.
-    // All mounts are rw; permission control by host kernel.
-    #[cfg(not(target_os = "windows"))]
-    let shared_store = config().init.shared_store;
-
-    // On Windows, home_cache is inside home_epkg, opt_epkg uses different layout.
-    #[cfg(target_os = "windows")]
+    // On Linux, namespace.rs performs all necessary bind mounts before VM start,
+    // then krun_set_root(env_root) shares entire env_root via single virtiofs.
+    // Guest accesses all directories naturally through root virtiofs.
+    // NO additional virtiofs mounts needed.
+    //
+    // On macOS/Windows, no namespace/bind mounts, so multiple virtiofs needed.
+    #[cfg(target_os = "linux")]
     {
-        do_add_mount(&dirs().home_epkg, None, false, true, &mut mounts, &mut mounted_canonicals);
+        log::debug!("libkrun: Linux mode - all paths accessible via root virtiofs (bind mounted by namespace.rs)");
+        Vec::new()
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(target_os = "linux"))]
     {
-        // home_epkg: always mount (rw) - core user config and envs
-        do_add_mount(&dirs().home_epkg, None, false, true, &mut mounts, &mut mounted_canonicals);
+        // Get unified mount policy from cross-platform mount_specs module
+        // This resolves symlinks and filters out paths covered by existing mounts
+        let resolved_specs = crate::mount_specs::resolve_and_filter_mount_specs(
+            &crate::mount_specs::build_vm_mount_policy(run_options),
+            env_root,
+        );
 
-        // opt_epkg: mount if shared_store mode
-        // In shared_store, opt_epkg contains envs, store, cache
-        if shared_store {
-            do_add_mount(&dirs().opt_epkg, None, false, true, &mut mounts, &mut mounted_canonicals);
-        }
+        // Convert resolved specs to virtiofs mounts
+        let mounts: Vec<(String, String, String, bool)> = resolved_specs
+            .into_iter()
+            .map(|(host_path, guest_path, read_only, try_only)| {
+                let tag = generate_virtiofs_tag(&host_path);
+                let guest = guest_path.to_string_lossy().to_string();
+                log::debug!("libkrun: adding virtiofs mount: {} -> {} (guest: {}) ({})",
+                           host_path.display(), tag, guest, if read_only { "ro" } else { "rw" });
+                (tag, host_path.to_string_lossy().to_string(), guest, read_only)
+            })
+            .collect();
 
-        // epkg_store: mount if not covered by home_epkg/opt_epkg
-        // do_add_mount() handles containment detection internally.
-        // In non-shared mode, store is inside home_epkg -> skipped.
-        // In shared mode, store is inside opt_epkg -> skipped.
-        // Only mounted if symlink to standalone dir outside these.
-        do_add_mount(&dirs().epkg_store, None, false, true, &mut mounts, &mut mounted_canonicals);
-
-        // home_cache: mount if not covered by home_epkg/opt_epkg
-        // do_add_mount() handles containment detection internally.
-        // macOS: ~/Library/Caches/epkg is standalone -> mounted.
-        // Linux non-shared: ~/.cache/epkg is standalone -> mounted.
-        // Linux shared: inside opt_epkg/cache -> skipped.
-        do_add_mount(&dirs().home_cache, None, false, true, &mut mounts, &mut mounted_canonicals);
-    }
-
-    // Mount current working directory if not chdir_to_env_root
-    if !run_options.chdir_to_env_root {
-        if let Ok(cwd) = std::env::current_dir() {
-            if cwd.is_absolute() && cwd.exists() {
-                log::debug!("libkrun: adding cwd mount: {}", cwd.display());
-                do_add_mount(&cwd, None, false, true, &mut mounts, &mut mounted_canonicals);
+        // Add epkg source directory (extra, not in policy - only for development)
+        use std::fs;
+        let epkg_src_path = crate::dirs::get_epkg_src_path();
+        if epkg_src_path.exists() {
+            match fs::canonicalize(&epkg_src_path) {
+                Ok(resolved_src) => {
+                    let tag = generate_virtiofs_tag(&resolved_src);
+                    let guest = resolved_src.to_string_lossy().to_string();
+                    log::debug!("libkrun: adding epkg src virtiofs mount: {} -> {} (guest: {})",
+                               resolved_src.display(), tag, guest);
+                    // Create mutable mounts and push
+                    let mut mounts = mounts;
+                    mounts.push((tag, resolved_src.to_string_lossy().to_string(), guest, false));
+                    mounts
+                }
+                Err(e) => {
+                    log::debug!("libkrun: could not resolve epkg src path {}: {}", epkg_src_path.display(), e);
+                    mounts
+                }
             }
+        } else {
+            mounts
         }
     }
-
-    // Add epkg binary directory if outside mounted dirs
-    if let Ok(epkg_exe) = std::env::current_exe() {
-        if let Some(epkg_bin_dir) = epkg_exe.parent() {
-            do_add_mount(epkg_bin_dir, None, false, false, &mut mounts, &mut mounted_canonicals);
-        }
-    }
-
-    // Add epkg source directory for mirrors.json access
-    let epkg_src_path = crate::dirs::get_epkg_src_path();
-    if epkg_src_path.exists() {
-        match fs::canonicalize(&epkg_src_path) {
-            Ok(resolved_src) => {
-                do_add_mount(&resolved_src, None, false, true, &mut mounts, &mut mounted_canonicals);
-            }
-            Err(e) => {
-                log::debug!("libkrun: could not resolve epkg src path {}: {}", epkg_src_path.display(), e);
-            }
-        }
-    }
-
-    // Add /lib/modules if exists (for kernel module loading)
-    do_add_mount(Path::new("/lib/modules"), None, false, true, &mut mounts, &mut mounted_canonicals);
-
-    mounts
 }
 
 /// Parse a mount spec string for virtiofs.
-/// Returns Some((host_path, guest_path, read_only, try_only)) if it's a valid directory mount spec.
-/// Returns None for non-bind mounts or invalid specs.
-#[cfg(feature = "libkrun")]
-fn parse_mount_spec_for_virtiofs(spec_str: &str, env_root: &Path) -> Option<(std::path::PathBuf, std::path::PathBuf, bool, bool)> {
-    // Parse mount spec: [SOURCE:]TARGET[:OPTIONS]
-    // For VM: SOURCE is host_path, TARGET is guest_path
-    let parts: Vec<&str> = spec_str.split(':').collect();
-
-    // Check for special filesystem types that virtiofs cannot handle (e.g., "tmpfs:/path")
-    // These must be mounted inside the VM by the guest init, not shared from host via virtiofs
-    #[cfg(target_os = "linux")]
-    if parts.len() >= 2 {
-        let source = parts[0];
-        if crate::mount::PSEUDO_FS_TYPES.contains(&source) {
-            return None;
-        }
-    }
-
-    let (source, target, options) = if parts.len() == 1 {
-        // Just a path, use same path for both host and guest
-        (parts[0], parts[0], "")
-    } else if parts.len() == 2 {
-        // Could be "SOURCE:TARGET" or "PATH:OPTIONS"
-        // Check if second part looks like options (contains commas or known option names)
-        if parts[1].contains(',') || parts[1].starts_with("ro") || parts[1].starts_with("rw") {
-            // PATH:OPTIONS format - same path for host and guest
-            (parts[0], parts[0], parts[1])
-        } else {
-            // SOURCE:TARGET format
-            (parts[0], parts[1], "")
-        }
-    } else if parts.len() >= 3 {
-        // SOURCE:TARGET:OPTIONS
-        (parts[0], parts[1], parts[2])
-    } else {
-        return None;
-    };
-
-    // Handle @ prefix for env_root substitution (only for source)
-    let host_path = if source.starts_with('@') {
-        lfs::normalize_path_separators(&env_root.join(&source[1..]))
-    } else {
-        std::path::PathBuf::from(source)
-    };
-
-    // Guest path is the target (may also have @ prefix)
-    let guest_path = if target.starts_with('@') {
-        lfs::normalize_path_separators(&env_root.join(&target[1..]))
-    } else {
-        std::path::PathBuf::from(target)
-    };
-
-    // Parse options for read_only and try flags
-    let read_only = options.contains("ro");
-    let try_only = options.contains("try");
-
-    Some((host_path, guest_path, read_only, try_only))
-}
-
 /// Generate a unique virtiofs tag from a path.
 /// The tag is used as the mount point identifier in the guest.
-#[cfg(feature = "libkrun")]
+#[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+fn generate_virtiofs_tag(path: &Path) -> String {
+    // Use the last component of the path as the tag, or the full path if root
+    let tag = path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("root");
+
+    // Make tag unique by using a simple hash of the full path
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    format!("{}_{}", tag, hash % 10000)
+}
+
 /// Convert a Windows path to a valid Linux guest path for virtiofs mounts.
 /// On Windows, host paths like C:\Users\... or \\wsl.localhost\... are not
 /// valid Linux mount points. This function converts them to usable Linux paths.
@@ -1019,19 +876,13 @@ pub fn windows_path_to_linux_guest(win_path: &str) -> String {
     win_path.replace('\\', "/")
 }
 
-fn generate_virtiofs_tag(path: &Path) -> String {
-    // Use the last component of the path as the tag, or the full path if root
-    let tag = path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("root");
-
-    // Make tag unique by using a simple hash of the full path
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut hasher);
-    let hash = hasher.finish();
-
-    format!("{}_{}", tag, hash % 10000)
+/// On macOS, host paths are already Unix-style, so just return unchanged.
+/// This function mirrors the Windows version for cross-platform API compatibility.
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+pub fn windows_path_to_linux_guest(path: &str) -> String {
+    // macOS paths are already Unix-style, no conversion needed
+    path.to_string()
 }
 
 #[cfg(feature = "libkrun")]

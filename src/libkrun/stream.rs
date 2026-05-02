@@ -13,7 +13,21 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use crate::models::IoMode;
+#[cfg(target_os = "linux")]
 use crate::vm::client::write_stream_output;
+
+/// Write decoded output data to stdout/stderr.
+/// On Linux, uses write_stream_output for proper O_NONBLOCK handling.
+/// On macOS/Windows, uses simple write_all.
+#[cfg(target_os = "linux")]
+fn write_output(writer: &mut (impl std::io::Write + std::io::IsTerminal), data: &[u8]) -> std::io::Result<()> {
+    write_stream_output(writer, data)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_output(writer: &mut impl std::io::Write, data: &[u8]) -> std::io::Result<()> {
+    writer.write_all(data)
+}
 
 #[cfg(unix)]
 use lazy_static::lazy_static;
@@ -238,12 +252,12 @@ fn handle_streaming_simple(stream: &mut std::os::unix::net::UnixStream, is_batch
                     match msg {
                         StreamMessage::Stdout { data, .. } => {
                             if let Ok(decoded) = STANDARD.decode(&data) {
-                                let _ = write_stream_output(&mut std::io::stdout(), &decoded);
+                                let _ = write_output(&mut std::io::stdout(), &decoded);
                             }
                         }
                         StreamMessage::Stderr { data, .. } => {
                             if let Ok(decoded) = STANDARD.decode(&data) {
-                                let _ = write_stream_output(&mut std::io::stderr(), &decoded);
+                                let _ = write_output(&mut std::io::stderr(), &decoded);
                             }
                         }
                         StreamMessage::Exit { code } => {
@@ -668,12 +682,12 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
                         match msg {
                             StreamMessage::Stdout { data, .. } => {
                                 if let Ok(decoded) = STANDARD.decode(&data) {
-                                    let _ = write_stream_output(&mut std::io::stdout(), &decoded);
+                                    let _ = write_output(&mut std::io::stdout(), &decoded);
                                 }
                             }
                             StreamMessage::Stderr { data, .. } => {
                                 if let Ok(decoded) = STANDARD.decode(&data) {
-                                    let _ = write_stream_output(&mut std::io::stderr(), &decoded);
+                                    let _ = write_output(&mut std::io::stderr(), &decoded);
                                 }
                             }
                             StreamMessage::Exit { code } => {
@@ -865,12 +879,12 @@ fn handle_streaming_with_stdin(stream: &mut std::fs::File) -> Result<i32> {
                         match msg {
                             StreamMessage::Stdout { data, .. } => {
                                 if let Ok(decoded) = STANDARD.decode(&data) {
-                                    let _ = write_stream_output(&mut std::io::stdout(), &decoded);
+                                    let _ = write_output(&mut std::io::stdout(), &decoded);
                                 }
                             }
                             StreamMessage::Stderr { data, .. } => {
                                 if let Ok(decoded) = STANDARD.decode(&data) {
-                                    let _ = write_stream_output(&mut std::io::stderr(), &decoded);
+                                    let _ = write_output(&mut std::io::stderr(), &decoded);
                                 }
                             }
                             StreamMessage::Exit { code } => {
