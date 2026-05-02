@@ -13,6 +13,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use crate::models::IoMode;
+use crate::vm::client::write_stream_output;
 
 #[cfg(unix)]
 use lazy_static::lazy_static;
@@ -237,14 +238,12 @@ fn handle_streaming_simple(stream: &mut std::os::unix::net::UnixStream, is_batch
                     match msg {
                         StreamMessage::Stdout { data, .. } => {
                             if let Ok(decoded) = STANDARD.decode(&data) {
-                                let _ = std::io::stdout().write_all(&decoded);
-                                let _ = std::io::stdout().flush();
+                                let _ = write_stream_output(&mut std::io::stdout(), &decoded);
                             }
                         }
                         StreamMessage::Stderr { data, .. } => {
                             if let Ok(decoded) = STANDARD.decode(&data) {
-                                let _ = std::io::stderr().write_all(&decoded);
-                                let _ = std::io::stderr().flush();
+                                let _ = write_stream_output(&mut std::io::stderr(), &decoded);
                             }
                         }
                         StreamMessage::Exit { code } => {
@@ -669,14 +668,12 @@ fn handle_streaming_unix(stream: &mut std::os::unix::net::UnixStream) -> Result<
                         match msg {
                             StreamMessage::Stdout { data, .. } => {
                                 if let Ok(decoded) = STANDARD.decode(&data) {
-                                    let _ = std::io::stdout().write_all(&decoded);
-                                    let _ = std::io::stdout().flush();
+                                    let _ = write_stream_output(&mut std::io::stdout(), &decoded);
                                 }
                             }
                             StreamMessage::Stderr { data, .. } => {
                                 if let Ok(decoded) = STANDARD.decode(&data) {
-                                    let _ = std::io::stderr().write_all(&decoded);
-                                    let _ = std::io::stderr().flush();
+                                    let _ = write_stream_output(&mut std::io::stderr(), &decoded);
                                 }
                             }
                             StreamMessage::Exit { code } => {
@@ -868,14 +865,12 @@ fn handle_streaming_with_stdin(stream: &mut std::fs::File) -> Result<i32> {
                         match msg {
                             StreamMessage::Stdout { data, .. } => {
                                 if let Ok(decoded) = STANDARD.decode(&data) {
-                                    let _ = std::io::stdout().write_all(&decoded);
-                                    let _ = std::io::stdout().flush();
+                                    let _ = write_stream_output(&mut std::io::stdout(), &decoded);
                                 }
                             }
                             StreamMessage::Stderr { data, .. } => {
                                 if let Ok(decoded) = STANDARD.decode(&data) {
-                                    let _ = std::io::stderr().write_all(&decoded);
-                                    let _ = std::io::stderr().flush();
+                                    let _ = write_stream_output(&mut std::io::stderr(), &decoded);
                                 }
                             }
                             StreamMessage::Exit { code } => {

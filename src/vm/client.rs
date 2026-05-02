@@ -1128,11 +1128,11 @@ fn spawn_stdin_thread(mut stream: TcpStream, stop_flag: Arc<AtomicBool>) -> std:
 /// translate \n to \r\n so line endings display correctly in raw mode.
 /// When NOT a terminal (output captured by script/file), strip \r from \r\n
 /// to avoid carriage return artifacts in captured output.
-fn write_stream_output(
-    output: &mut dyn Write,
+pub fn write_stream_output<W: Write + IsTerminal>(
+    output: &mut W,
     bytes: &[u8],
-    is_terminal: bool,
 ) -> std::io::Result<()> {
+    let is_terminal = output.is_terminal();
     log::trace!("write_stream_output: {} bytes, is_terminal={}", bytes.len(), is_terminal);
     if is_terminal {
         // Terminal mode: ensure \n becomes \r\n for proper display
@@ -1185,20 +1185,12 @@ fn process_stream_message(msg: StreamMessage) -> Result<Option<i32>> {
     match msg {
         StreamMessage::Stdout { data, .. } => {
             let bytes = STANDARD.decode(&data)?;
-            write_stream_output(
-                &mut std::io::stdout(),
-                &bytes,
-                std::io::stdout().is_terminal(),
-            )?;
+            write_stream_output(&mut std::io::stdout(), &bytes)?;
             Ok(None)
         }
         StreamMessage::Stderr { data, .. } => {
             let bytes = STANDARD.decode(&data)?;
-            write_stream_output(
-                &mut std::io::stderr(),
-                &bytes,
-                std::io::stderr().is_terminal(),
-            )?;
+            write_stream_output(&mut std::io::stderr(), &bytes)?;
             Ok(None)
         }
         StreamMessage::Exit { code } => {
