@@ -68,6 +68,7 @@ pub fn try_vmm_backends(
                     last_err = Some(e);
                     continue;
                 }
+                return Ok(());
             }
             "qemu" => {
                 #[cfg(target_os = "linux")]
@@ -86,6 +87,7 @@ pub fn try_vmm_backends(
                         continue;
                     }
                 }
+                return Ok(());
             }
             other => {
                 log::warn!("Unknown VMM backend '{}' in --vmm list, skipping", other);
