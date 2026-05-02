@@ -125,7 +125,8 @@ fn default_vmm_order() -> Vec<String> {
 
 /// Try libkrun backend.
 ///
-/// This function never returns on success - the VM takes over execution.
+/// Returns Ok(()) when VM execution completes successfully (e.g., session reuse,
+/// daemon mode, or no_exit mode). Returns Err if VM fails to start or execute.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn try_krun_backend(
     env_root: &Path,
@@ -136,7 +137,7 @@ pub fn try_krun_backend(
     {
         log::debug!("Trying VMM backend: libkrun");
         match crate::libkrun::run_command_in_krun(env_root, run_options, guest_command) {
-            Ok(()) => unreachable!("run_command_in_krun never returns on success"),
+            Ok(()) => Ok(()),
             Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("HostAddressNotAvailable") || msg.contains("GuestMemoryMmap") {
@@ -159,7 +160,8 @@ pub fn try_krun_backend(
 
 /// Try qemu backend.
 ///
-/// This function never returns on success - the VM takes over execution.
+/// Returns Ok(()) when VM execution completes successfully (e.g., session reuse
+/// completes). Returns Err if VM fails to start or execute.
 #[cfg(target_os = "linux")]
 pub fn try_qemu_backend(
     env_root: &Path,
@@ -169,10 +171,7 @@ pub fn try_qemu_backend(
     vm_daemon_ready_fd: Option<&OwnedFd>,
 ) -> Result<()> {
     log::debug!("Trying VMM backend: qemu");
-    match crate::qemu::run_command_in_qemu(env_root, run_options, guest_command, vm_socket_path, vm_daemon_ready_fd) {
-        Ok(()) => unreachable!("run_command_in_qemu never returns on success"),
-        Err(e) => Err(e),
-    }
+    crate::qemu::run_command_in_qemu(env_root, run_options, guest_command, vm_socket_path, vm_daemon_ready_fd)
 }
 
 #[cfg(not(target_os = "linux"))]
