@@ -1126,6 +1126,8 @@ fn spawn_stdin_thread(mut stream: TcpStream, stop_flag: Arc<AtomicBool>) -> std:
 
 /// Write bytes to stdout/stderr. When the output is a terminal (e.g. PTY mode),
 /// translate \n to \r\n so line endings display correctly in raw mode.
+/// When NOT a terminal (output captured by script/file), strip \r from \r\n
+/// to avoid carriage return artifacts in captured output.
 fn write_stream_output(
     output: &mut dyn Write,
     bytes: &[u8],
@@ -1133,6 +1135,7 @@ fn write_stream_output(
 ) -> std::io::Result<()> {
     log::trace!("write_stream_output: {} bytes, is_terminal={}", bytes.len(), is_terminal);
     if is_terminal {
+        // Terminal mode: ensure \n becomes \r\n for proper display
         let mut last = 0;
         for i in 0..bytes.len() {
             if bytes[i] == b'\n' && (i == 0 || bytes[i - 1] != b'\r') {
@@ -1145,7 +1148,20 @@ fn write_stream_output(
             output.write_all(&bytes[last..])?;
         }
     } else {
-        output.write_all(&bytes)?;
+        // Non-terminal mode: strip \r from \r\n sequences
+        // PTY mode on guest converts LF to CRLF, but when output is captured
+        // by script/file, we want plain LF without CR
+        let mut last = 0;
+        for i in 0..bytes.len() {
+            if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                output.write_all(&bytes[last..i])?;
+                output.write_all(b"\n")?;
+                last = i + 2;  // Skip both \r and \n
+            }
+        }
+        if last < bytes.len() {
+            output.write_all(&bytes[last..])?;
+        }
     }
     output.flush()
 }
