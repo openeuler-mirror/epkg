@@ -647,12 +647,12 @@ fn build_libkrun_config(
     // Add virtiofs mount specs for guest init to mount
     // Format: epkg.vol_N=tag:guest_path[:ro]
     #[cfg(target_os = "linux")]
-    let mount_specs: Vec<(String, String, String, bool)> = Vec::new();
+    let virtiofs_mounts: Vec<(String, String, String, bool)> = Vec::new();
 
     #[cfg(not(target_os = "linux"))]
-    let mount_specs = crate::mount_specs::build_virtiofs_mounts(env_root, run_options);
+    let virtiofs_mounts = crate::mount_specs::build_virtiofs_mounts(env_root, run_options);
 
-    for (i, (tag, _host_path, guest_path, read_only)) in mount_specs.iter().enumerate() {
+    for (i, (tag, _host_path, guest_path, read_only)) in virtiofs_mounts.iter().enumerate() {
         let spec = if *read_only {
             format!("{}:{}:ro", tag, guest_path)
         } else {
@@ -701,12 +701,6 @@ fn build_libkrun_config(
     } else {
         log::debug!("libkrun: no kernel available (no --kernel specified and no default kernel found)");
     }
-
-    #[cfg(target_os = "linux")]
-    let virtiofs_mounts: Vec<(String, String, String, bool)> = Vec::new();
-
-    #[cfg(not(target_os = "linux"))]
-    let virtiofs_mounts = crate::mount_specs::build_virtiofs_mounts(env_root, run_options);
 
     Ok(LibkrunConfig {
         use_vsock,
