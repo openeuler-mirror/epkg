@@ -1754,14 +1754,22 @@ fn run_reverse_vsock_mode_inner(
     let cwd = if run_options.chdir_to_env_root { Some("/") } else { cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()); cwd_str.as_deref() };
     let stdin_data = run_options.stdin.as_deref();
 
+    // vm_daemon mode: always send Some(0) (infinite wait) to guest daemon
+    // This ensures guest daemon keeps VM alive regardless of session.timeout
+    let daemon_keep_timeout = if run_options.vm_daemon {
+        Some(0)  // Never timeout - child process parks to keep VM alive
+    } else {
+        run_options.vm_keep_timeout
+    };
+
     // Send command over the accepted connection
     // On Windows, use the named-pipe-specific function that calls FlushFileBuffers
     #[cfg(windows)]
     let exit_code = match super::stream::send_command_over_named_pipe(
         &config.cmd_parts,
         run_options.io_mode,
-        run_options.vm_keep_timeout.is_some(),
-        run_options.vm_keep_timeout,
+        daemon_keep_timeout.is_some(),
+        daemon_keep_timeout,
         None,  // extend_timeout_secs
         Some(&run_options.env_vars),
         cwd,
@@ -1782,8 +1790,8 @@ fn run_reverse_vsock_mode_inner(
     let exit_code = match super::stream::send_command_over_stream(
         &config.cmd_parts,
         run_options.io_mode,
-        run_options.vm_keep_timeout.is_some(),
-        run_options.vm_keep_timeout,
+        daemon_keep_timeout.is_some(),
+        daemon_keep_timeout,
         None,  // extend_timeout_secs
         Some(&run_options.env_vars),
         cwd,
@@ -1995,10 +2003,18 @@ pub fn run_command_in_krun(
         let cwd_str;
         let cwd = if run_options.chdir_to_env_root { Some("/") } else { cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()); cwd_str.as_deref() };
         let stdin_data = run_options.stdin.as_deref();
+        // vm_daemon mode: always send Some(0) (infinite wait) to guest daemon
+        // This ensures guest daemon keeps VM alive regardless of session.timeout
+        // Normal run mode: use run_options.vm_keep_timeout (None=immediate, Some(N)=N secs)
+        let daemon_keep_timeout = if run_options.vm_daemon {
+            Some(0)  // Never timeout - child process parks to keep VM alive
+        } else {
+            run_options.vm_keep_timeout
+        };
         let exit_code = super::stream::send_command_via_vsock(
             &config.cmd_parts,
             run_options.io_mode,
-            run_options.vm_keep_timeout,
+            daemon_keep_timeout,
             None,  // extend_timeout_secs
             &vsock_sock_path,
             Some(&run_options.env_vars),
