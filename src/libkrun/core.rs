@@ -15,8 +15,8 @@ use crate::run::RunOptions;
 /// Import vm::session functions used in this module
 #[cfg(feature = "libkrun")]
 use crate::vm::{
-    discover_vm_session, register_vm_session_with_timeout,
-    unregister_vm_session, vm_socket_path_for_env,
+    discover_vm_session, build_vm_config_from_run_options,
+    register_vm_session_with_config, unregister_vm_session, vm_socket_path_for_env,
 };
 
 /// Connect to an existing VM session for the given env_root.
@@ -1741,9 +1741,10 @@ fn run_reverse_vsock_mode_inner(
     // This allows other processes to discover the VM while the command is running.
     // ALWAYS register (even for transient VMs) to handle concurrent process discovery.
     // Stale session cleanup happens when connection fails.
-    let _ = register_vm_session_with_timeout(env_root, &env_name, &vsock_sock_path, run_options.vm_keep_timeout);
-    log::info!("vm_session: registered VM session for {} (socket {}, timeout={:?})",
-               env_root.display(), vsock_sock_path.display(), run_options.vm_keep_timeout);
+    let vm_config = build_vm_config_from_run_options(run_options);
+    let _ = register_vm_session_with_config(env_root, &env_name, &vsock_sock_path, &vm_config);
+    log::info!("vm_session: registered VM session for {} (socket {}, timeout={:?}, cpus={}, memory={})",
+               env_root.display(), vsock_sock_path.display(), vm_config.timeout, vm_config.cpus, vm_config.memory_mib);
 
     crate::debug_epkg!("[PERF] Guest connected, sending command...");
     let cmd_start = std::time::Instant::now();
@@ -1982,9 +1983,10 @@ pub fn run_command_in_krun(
         // ALWAYS register for cross-process discovery. Other processes may try to connect concurrently.
         // Stale session cleanup happens when connection fails.
         let env_name = &crate::models::config().common.env_name;
-        let _ = register_vm_session_with_timeout(env_root, env_name, &vsock_sock_path, run_options.vm_keep_timeout);
-        log::info!("vm_session: registered VM session for {} (socket {}, timeout={:?})",
-                   env_root.display(), vsock_sock_path.display(), run_options.vm_keep_timeout);
+        let vm_config = build_vm_config_from_run_options(run_options);
+        let _ = register_vm_session_with_config(env_root, env_name, &vsock_sock_path, &vm_config);
+        log::info!("vm_session: registered VM session for {} (socket {}, timeout={:?}, cpus={}, memory={})",
+                   env_root.display(), vsock_sock_path.display(), vm_config.timeout, vm_config.cpus, vm_config.memory_mib);
 
         // Guest is ready - proceed directly to send command.
         // The ready signal confirms guest vm_daemon is running and waiting.
@@ -2009,9 +2011,10 @@ pub fn run_command_in_krun(
         // vm_daemon mode: keep VM alive, don't shutdown
         if run_options.vm_daemon {
             log::info!("libkrun: daemon mode - dummy command returned, VM is ready");
-            // Register VM session (if not already registered) with timeout
+            // Register VM session (if not already registered) with full config
             let env_name = &run_options.env_name;
-            crate::vm::register_vm_session_with_timeout(env_root, env_name, &vsock_sock_path, run_options.vm_keep_timeout)?;
+            let vm_config = build_vm_config_from_run_options(run_options);
+            crate::vm::register_vm_session_with_config(env_root, env_name, &vsock_sock_path, &vm_config)?;
 
             #[cfg(not(target_os = "linux"))]
             {
@@ -2071,7 +2074,8 @@ pub fn run_command_in_krun(
             {
                 // macOS/Windows: store session and keep VM alive in process
                 let env_name = &run_options.env_name;
-                crate::vm::register_vm_session_with_timeout(env_root, env_name, &vsock_sock_path, run_options.vm_keep_timeout)?;
+                let vm_config = build_vm_config_from_run_options(run_options);
+                crate::vm::register_vm_session_with_config(env_root, env_name, &vsock_sock_path, &vm_config)?;
                 *VM_REUSE_SESSION.lock().unwrap() = Some(VmReuseSession {
                     ctx_id,
                     vsock_sock_path,

@@ -279,19 +279,30 @@ pub fn register_vm_session(
 
 /// Simple registration for libkrun's existing path.
 /// Uses default config and takes env_name as parameter.
-/// Register VM session with explicit timeout.
-/// Used when vm start specifies timeout that should be persisted in session.
+/// Build VmConfig from RunOptions for session registration.
+/// Uses RunOptions values when specified, defaults otherwise.
 #[cfg(feature = "libkrun")]
-pub fn register_vm_session_with_timeout(
+pub fn build_vm_config_from_run_options(run_options: &crate::run::RunOptions) -> VmConfig {
+    VmConfig {
+        timeout: run_options.vm_keep_timeout,
+        extend: 10,  // Default extend value
+        cpus: run_options.vm_cpus.map(|c| c as u32).unwrap_or(2),
+        memory_mib: run_options.vm_memory_mib.unwrap_or(1024),
+        backend: run_options.vmm_order.first().cloned().unwrap_or_else(|| "libkrun".to_string()),
+    }
+}
+
+/// Register VM session with explicit config.
+/// Used when vm start specifies config that should be persisted in session.
+#[cfg(feature = "libkrun")]
+pub fn register_vm_session_with_config(
     env_root: &Path,
     env_name: &str,
     socket_path: &Path,
-    timeout: Option<u32>,
+    config: &VmConfig,
 ) -> Result<()> {
-    let mut config = VmConfig::default();
-    config.timeout = timeout;
     let daemon_pid = std::process::id();
-    register_vm_session(env_root, env_name, socket_path, "libkrun", &config, daemon_pid)
+    register_vm_session(env_root, env_name, socket_path, "libkrun", config, daemon_pid)
 }
 
 /// Unregister a VM session (called when VM shuts down).
