@@ -1768,7 +1768,6 @@ fn run_reverse_vsock_mode_inner(
     let exit_code = match super::stream::send_command_over_named_pipe(
         &config.cmd_parts,
         run_options.io_mode,
-        daemon_keep_timeout.is_some(),
         daemon_keep_timeout,
         None,  // extend_timeout_secs
         Some(&run_options.env_vars),
@@ -1790,7 +1789,6 @@ fn run_reverse_vsock_mode_inner(
     let exit_code = match super::stream::send_command_over_stream(
         &config.cmd_parts,
         run_options.io_mode,
-        daemon_keep_timeout.is_some(),
         daemon_keep_timeout,
         None,  // extend_timeout_secs
         Some(&run_options.env_vars),

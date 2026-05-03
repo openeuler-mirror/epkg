@@ -39,6 +39,7 @@ pub use session::{
 
 // For Linux (qemu backend without libkrun feature), export discover_vm_session
 #[cfg(all(target_os = "linux", not(feature = "libkrun")))]
+#[allow(unused_imports)]
 pub use session::discover_vm_session;
 
 pub use start::cmd_vm_start;
