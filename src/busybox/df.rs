@@ -403,9 +403,9 @@ mod win_df {
 fn get_fs_stats(path: &str, inodes: bool) -> Result<DfFsStat> {
     let stats = posix_statfs(path)
         .map_err(|e| match e {
-            PosixError::Io(ioe) => eyre!("cannot read filesystem statistics for '{}': {}", path, ioe),
-            PosixError::InvalidArgument(m) => eyre!("cannot read filesystem statistics for '{}': {}", path, m),
-            PosixError::NotFound => eyre!("cannot read filesystem statistics for '{}': not found", path),
+            PosixError::Io(ioe) => eyre!("{}: {}", path, ioe),
+            PosixError::InvalidArgument(m) => eyre!("{}: {}", path, m),
+            PosixError::NotFound => eyre!("{}: not found", path),
         })?;
     Ok(statfs_to_df(stats, inodes))
 }
