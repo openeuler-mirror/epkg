@@ -25,6 +25,9 @@ const LINUX_ONLY: &[&str] = &[
     "mountpoint",
     "umount",
 
+    // df: reads /proc/mounts for mount table, only available on Linux
+    "df",
+
     // IPv4 ifreq / rtentry ioctl layout — Linux ABI, not BSD/macOS-compatible as written
     "ifconfig",
     "route",
