@@ -476,7 +476,14 @@ fn df_resolve_mounts(options: &DfOptions) -> Result<Vec<(String, String, String)
         let mut found = None;
         for (device, mount_point, fs_type) in &all_mounts {
             #[cfg(unix)]
-            if fs == device || fs == mount_point || path.starts_with(mount_point) {
+            if fs == device || fs == mount_point {
+                // Exact match on device name or mount point
+                found = Some((device.clone(), mount_point.clone(), fs_type.clone()));
+                break;
+            }
+            #[cfg(unix)]
+            if path.exists() && path.starts_with(mount_point) {
+                // Path exists and is under this mount point
                 // Choose the longest (most specific) matching mount point
                 if found.as_ref().map(|(_, mp, _): &(_, String, _)| mp.len() < mount_point.len()).unwrap_or(true) {
                     found = Some((device.clone(), mount_point.clone(), fs_type.clone()));
@@ -511,7 +518,7 @@ fn df_resolve_mounts(options: &DfOptions) -> Result<Vec<(String, String, String)
                 filtered.push((dev, root_str, fs_type));
             }
             #[cfg(not(windows))]
-            return Err(eyre!("cannot find mount point for '{}'", fs));
+            return Err(eyre!("{}: can't find mount point", fs));
         }
     }
 
