@@ -39,7 +39,10 @@ pub fn build_vm_mount_policy(run_options: &crate::run::RunOptions) -> Vec<String
             let cwd_str = cwd.to_string_lossy();
             if cwd.is_absolute() && cwd.exists() {
                 log::trace!("VM mount policy: adding cwd {}", cwd_str);
-                specs.push(format!("{}://{}", cwd_str, cwd_str));
+                // Use '@' prefix for target path so it's resolved inside env_root.
+                // This ensures: 1) target directory created in rootfs, 2) VM guest sees it via virtiofs.
+                // Format: source:target where target=@/path means env_root+/path.
+                specs.push(format!("{}:@{}", cwd_str, cwd_str));
             }
         }
     }
