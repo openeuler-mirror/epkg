@@ -26,7 +26,8 @@ fn write_output(writer: &mut (impl std::io::Write + std::io::IsTerminal), data: 
 
 #[cfg(not(target_os = "linux"))]
 fn write_output(writer: &mut impl std::io::Write, data: &[u8]) -> std::io::Result<()> {
-    writer.write_all(data)
+    writer.write_all(data)?;
+    writer.flush()
 }
 
 #[cfg(unix)]
