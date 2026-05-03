@@ -231,13 +231,14 @@ pub fn build_command_request(
 
     if use_pty {
         request.insert("pty".to_string(), serde_json::Value::Bool(true));
-        // Try to get terminal size
-        let (rows, cols) = Term::stdout().size();
-        if rows > 0 && cols > 0 {
-            let mut terminal = serde_json::Map::new();
-            terminal.insert("rows".to_string(), serde_json::Value::Number(rows.into()));
-            terminal.insert("cols".to_string(), serde_json::Value::Number(cols.into()));
-            request.insert("terminal".to_string(), serde_json::Value::Object(terminal));
+        // Try to get terminal size - use size_checked() to avoid default values (24, 80)
+        if let Some((rows, cols)) = Term::stdout().size_checked() {
+            if rows > 0 && cols > 0 {
+                let mut terminal = serde_json::Map::new();
+                terminal.insert("rows".to_string(), serde_json::Value::Number(rows.into()));
+                terminal.insert("cols".to_string(), serde_json::Value::Number(cols.into()));
+                request.insert("terminal".to_string(), serde_json::Value::Object(terminal));
+            }
         }
     } else {
         request.insert("pty".to_string(), serde_json::Value::Bool(false));

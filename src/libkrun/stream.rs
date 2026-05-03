@@ -129,6 +129,19 @@ pub(crate) fn build_command_request(
     if is_batch {
         m.insert("batch".to_string(), serde_json::Value::Bool(true));
     }
+    // Add terminal size for PTY mode
+    if use_pty {
+        use console::Term;
+        // Use size_checked() to avoid default values (24, 80) when terminal size cannot be determined
+        if let Some((rows, cols)) = Term::stdout().size_checked() {
+            if rows > 0 && cols > 0 {
+                let mut terminal = serde_json::Map::new();
+                terminal.insert("rows".to_string(), serde_json::Value::Number(rows.into()));
+                terminal.insert("cols".to_string(), serde_json::Value::Number(cols.into()));
+                m.insert("terminal".to_string(), serde_json::Value::Object(terminal));
+            }
+        }
+    }
     // VM lifecycle: None=immediate shutdown, Some(0)=never, Some(N)=N seconds idle
     if let Some(secs) = vm_keep_timeout_secs {
         m.insert("vm_keep_timeout_secs".to_string(), serde_json::Value::Number(secs.into()));
