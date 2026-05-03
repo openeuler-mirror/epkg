@@ -586,8 +586,10 @@ pub fn run(options: DfOptions) -> Result<()> {
         let stats = match get_fs_stats(&mount_point, options.inodes) {
             Ok(stats) => stats,
             Err(e) => {
-                if options.all_filesystems {
-                    eprintln!("df: {}: {}", mount_point, e);
+                // Skip inaccessible mount points when iterating all mounts.
+                // Only fail when user explicitly requested this filesystem.
+                if options.filesystems.is_empty() {
+                    eprintln!("df: {}", e);
                     continue;
                 } else {
                     return Err(e);
