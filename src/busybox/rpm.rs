@@ -113,7 +113,8 @@ pub(crate) fn select_installed_packages_by_predicate<P>(
 where
     P: Fn(&Package, &InstalledPackageInfo) -> bool,
 {
-    // Load installed packages including pending packages from current transaction
+    // Ensure metadata and installed packages are loaded
+    crate::repo::sync_channel_metadata()?;
     crate::io::load_installed_packages()?;
 
     let mut pkglines = Vec::new();
@@ -1157,6 +1158,7 @@ fn select_packages_by_dependency<F>(
 where
     F: Fn(&Package) -> &[String]
 {
+    // For whatrequires, whatconflicts, etc.: iterate installed packages' field
     let pkglines = select_installed_packages_by_predicate(
         |package, _installed_info| {
             get_field(package).iter().any(|dep| dep == capability)
@@ -1280,13 +1282,62 @@ where
     F: Fn(&Package) -> &[String]
 {
     if let Some(capability) = capability {
-        let found = select_packages_by_dependency(&capability, get_field, options)?;
+        // For whatprovides, use provide2pkgnames index for efficient lookup
+        let found = if verb == "provides" {
+            select_packages_by_whatprovides(&capability, options)?
+        } else {
+            select_packages_by_dependency(&capability, get_field, options)?
+        };
         if found == 0 {
             eprintln!("error: capability {}: No package {} this capability", capability, verb);
             std::process::exit(1);
         }
     }
     Ok(())
+}
+
+/// Select packages that provide a capability using provide2pkgnames index
+fn select_packages_by_whatprovides(capability: &str, options: &mut RpmOptions) -> Result<usize> {
+    // Ensure metadata is loaded to populate repodata_indice before accessing provide2pkgnames
+    crate::repo::sync_channel_metadata()?;
+
+    // Use provide2pkgnames index to find provider pkgnames
+    let provider_pkgnames = crate::mmio::map_provide2pkgnames(capability)?;
+
+    if provider_pkgnames.is_empty() {
+        // Fallback: search in installed packages' provides field
+        // Parse each provide to extract the name part (e.g., "bash" from "bash = 5.2.37-7.oe2509")
+        let pkglines = select_installed_packages_by_predicate(
+            |package, _installed_info| {
+                package.provides.iter().any(|prov| {
+                    // Extract capability name from versioned provide string
+                    // parse_provides() works on single items too, returns HashMap with one entry
+                    let format = crate::models::channel_config().format;
+                    let provide_map = crate::parse_provides::parse_provides(prov, format);
+                    provide_map.keys().any(|name| name == capability)
+                })
+            },
+        )?;
+        let count = pkglines.len();
+        options.package_specs.extend(pkglines);
+        Ok(count)
+    } else {
+        // Find installed packages matching provider pkgnames
+        // Need to load installed packages first
+        crate::io::load_installed_packages()?;
+        let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+        let mut pkglines = Vec::new();
+        for (pkgkey, installed_info) in installed.iter() {
+            if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
+                if provider_pkgnames.iter().any(|n| n.as_str() == pkgname) {
+                    pkglines.push(installed_info.pkgline.clone());
+                }
+            }
+        }
+        let count = pkglines.len();
+        options.package_specs.extend(pkglines);
+        Ok(count)
+    }
 }
 
 fn query_verify_packages(options: &mut RpmOptions) -> Result<()> {
