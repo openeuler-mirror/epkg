@@ -244,8 +244,9 @@ epkg -e "$ENV3_NAME" --assume-yes install $TEST_PKG_ALT || error "Failed to inst
 if ! epkg -e "$ENV3_NAME" --root "$ENV3_PATH" run $TEST_PKG_ALT --version; then
     error "$TEST_PKG_ALT not found when both -e and --root flags present (-e should win)"
 fi
-# Verify jq is not found (should error)
-if epkg -e "$ENV3_NAME" --root "$ENV3_PATH" run jq --version; then
+# Verify jq is not found (should error; expected behavior, suppress error output)
+log "Verifying -e overrides --root (jq should NOT be found in explicit-name env)"
+if epkg -e "$ENV3_NAME" --root "$ENV3_PATH" run jq --version 2>/dev/null; then
     error "jq found when -e should have overridden --root"
 fi
 
