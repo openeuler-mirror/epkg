@@ -585,8 +585,14 @@ pub(crate) fn pkgline_to_package_and_installed_info(pkgline: &str) -> Option<(Pa
             let pkgkey = package::pkgline2pkgkey(pkgline).ok()?;
             PACKAGE_CACHE.installed_packages.read().unwrap().get(&pkgkey).cloned()
         })?;
-    let package = map_pkgline2package(pkgline).ok()?;
-    Some((package.as_ref().clone(), installed_info))
+    // Extract pkgkey from pkgline for repo lookup
+    let pkgkey = package::pkgline2pkgkey(pkgline).ok()?;
+    // First try repo data for complete info (summary, size, etc.)
+    // Fallback to local store when repo doesn't have the package
+    let package = crate::mmio::map_pkgkey2package(&pkgkey)
+        .ok()
+        .or_else(|| map_pkgline2package(pkgline).ok().map(|p| p.as_ref().clone()))?;
+    Some((package, installed_info))
 }
 
 /// Select installed pkglines by PackageNVRA (name as glob, optional version and arch).
@@ -680,8 +686,14 @@ pub(crate) fn path_match_matches(state: &PathMatchState, normalized_path: &str) 
 /// If package is not installed, installed_info is None.
 fn resolve_from_pkgline(pkgline: &str) -> Option<(Package, Option<Arc<InstalledPackageInfo>>)> {
     let installed_info = PACKAGE_CACHE.pkgline2installed.read().unwrap().get(pkgline).cloned();
-    let package_arc = map_pkgline2package(pkgline).ok()?;
-    Some((package_arc.as_ref().clone(), installed_info))
+    // Extract pkgkey from pkgline for repo lookup
+    let pkgkey = package::pkgline2pkgkey(pkgline).ok()?;
+    // First try repo data for complete info (summary, size, etc.)
+    // Fallback to local store when repo doesn't have the package
+    let package = crate::mmio::map_pkgkey2package(&pkgkey)
+        .ok()
+        .or_else(|| map_pkgline2package(pkgline).ok().map(|p| p.as_ref().clone()))?;
+    Some((package, installed_info))
 }
 
 /// Resolve installed packages by PackageNVRA (name/version/arch spec).
@@ -705,9 +717,18 @@ fn resolve_from_pkgkey(
 ) -> Option<(Package, Option<Arc<InstalledPackageInfo>>)> {
     let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
     if let Some(info) = installed.get(pkgkey) {
-        let pkgline = info.pkgline.clone();
+        let info_clone = Arc::clone(info);
         drop(installed);
-        return resolve_from_pkgline(&pkgline);
+        // For installed packages: first try repo data for complete info (summary, size, etc.)
+        // then fallback to local store if repo lookup fails
+        if let Ok(package) = crate::mmio::map_pkgkey2package(pkgkey) {
+            return Some((package, Some(info_clone)));
+        }
+        // Fallback: try local store when repo doesn't have the package
+        if let Some(result) = resolve_from_pkgline(&info_clone.pkgline) {
+            return Some(result);
+        }
+        return None;
     }
     drop(installed);
     if allow_repo_query {
@@ -832,7 +853,8 @@ fn for_each_package<F>(
 where
     F: FnMut(&Package, Option<&Path>, Option<&InstalledPackageInfo>) -> Result<()>,
 {
-    // Load installed packages including pending packages from current transaction
+    // Ensure metadata and installed packages are loaded
+    crate::repo::sync_channel_metadata()?;
     crate::io::load_installed_packages()?;
     let mut exit_code = 0;
     for pkg_spec in package_specs {

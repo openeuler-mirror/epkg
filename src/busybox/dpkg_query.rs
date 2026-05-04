@@ -275,7 +275,8 @@ fn list_packages(pattern: Option<&str>) -> Result<()> {
 
 /// Select installed package pkglines by one pattern. Use None or "*" for all installed.
 fn select_pkglines(pattern: Option<&str>) -> Result<Vec<String>> {
-    // Load installed packages including pending packages from current transaction
+    // Ensure metadata and installed packages are loaded
+    crate::repo::sync_channel_metadata()?;
     crate::io::load_installed_packages()?;
     let spec = pattern.unwrap_or("*");
     let matches = resolve_package_spec(spec, false);
