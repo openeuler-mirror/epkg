@@ -723,8 +723,8 @@ fn print_headers_if_needed(headers: &[&str], col_widths: &[usize]) {
 /// Compute table configuration: column widths, start positions, and alignment
 
 fn compute_table_config() -> ([usize; 8], [usize; 8], [bool; 8]) {
-    // Fixed widths: status(2), depth(5), size(8), pkgname(36), version(30), arch(11), repo(18)
-    let col_widths = [2, 5, 8, 36, 30, 11, 18, 60];
+    // Fixed widths: status(2), depth(5), size(9), pkgname(36), version(30), arch(11), repo(18)
+    let col_widths = [2, 5, 9, 36, 30, 11, 18, 60];
     // Compute start positions for each column (including inter-column spaces)
     let mut starts = [0; 8];
     let mut pos = 0;
