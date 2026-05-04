@@ -81,8 +81,8 @@ MOUNTS="$MOUNTS -m $HOME/.epkg/store:/opt/epkg/store:ro"
 EPKG_CACHE_DIR="${HOME}/.cache/epkg"
 mkdir -p "$EPKG_CACHE_DIR/downloads" "$EPKG_CACHE_DIR/e2e-logs"
 # Path-consistency: mount cache to same path in guest
-MOUNTS="$MOUNTS -m $EPKG_CACHE_DIR:/home/$EPKG_USER_HOST/.cache"
-E2E_LOG_DIR=/home/$EPKG_USER_HOST/.cache/e2e-logs  # Guest path (same as host)
+MOUNTS="$MOUNTS -m $EPKG_CACHE_DIR:/home/$EPKG_USER_HOST/.cache/epkg"
+E2E_LOG_DIR=/home/$EPKG_USER_HOST/.cache/epkg/e2e-logs  # Guest path (same as host)
 RESOLV_TMP="${TMPDIR:-/tmp}/epkg-e2e-resolv.$$"
 # Guest DNS: public resolvers first (work through QEMU NAT), then QEMU slirp (10.0.2.3) and host
 # upstreams from systemd. Slirp-only configs often return EAI_AGAIN on some hosts. Do not bind-mount host
