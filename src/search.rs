@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::collections::HashSet;
+use std::collections::HashMap;
 
 use crossbeam_channel::Receiver;
 use flate2::read::GzDecoder;
@@ -18,6 +19,7 @@ use regex::bytes::RegexBuilder;
 
 use crate::models::*;
 use crate::lfs;
+use serde_json;
 
 // Helper functions for case-insensitive pattern matching
 fn find_all_matches(haystack: &[u8], pattern: &[u8], ignore_case: bool) -> Vec<usize> {
@@ -65,11 +67,12 @@ pub struct SearchOptions {
     pub regex_pattern: Option<regex::bytes::Regex>,
     pub glob_pattern: Option<glob::Pattern>,
     pub collected_results: Option<Arc<Mutex<Vec<(String, String)>>>>,
+    // New options for package search
+    pub in_fields: Vec<String>,       // Fields to match in (empty = all fields)
+    pub format: Option<String>,       // Output format string or "json"
+    pub limit: Option<usize>,         // Limit number of results
+    pub result_count: Option<Arc<Mutex<usize>>>, // Global result counter for limit
 }
-
-// Constants for package metadata patterns
-static PKGNAME_PATTERN: &[u8] = b"pkgname: ";
-static SUMMARY_PATTERN: &[u8] = b"summary: ";
 
 fn setup_patterns(options: &mut SearchOptions) -> Result<()> {
     let mut literal_pattern = options.origin_pattern.clone();
@@ -131,6 +134,11 @@ pub fn search_repo_cache(options: &mut SearchOptions) -> Result<()> {
     let mut producer_handles = Vec::new();
 
     setup_patterns(options)?;
+
+    // Initialize global result counter for limit
+    if options.limit.is_some() {
+        options.result_count = Some(Arc::new(Mutex::new(0)));
+    }
 
     for repo_index in repodata_indice.values() {
         let repo_dir = PathBuf::from(&repo_index.repo_dir_path);
@@ -1024,14 +1032,25 @@ pub fn extract_literal_string(pattern: &str) -> Option<String> {
     }
 }
 
+// Helper function to find the next newline character
+#[inline]
+fn find_next_newline(data: &[u8], start: usize) -> usize {
+    memchr::memchr(b'\n', &data[start..])
+        .map(|pos| start + pos)
+        .unwrap_or(data.len())
+}
+
+// Constants for package metadata patterns (used by original search logic)
+static PKGNAME_PATTERN: &[u8] = b"pkgname: ";
+static SUMMARY_PATTERN: &[u8] = b"summary: ";
+
 // Check if a position is at the start of a line
-fn is_line_start(data: &[u8], pos: usize, _pattern: &[u8]) -> bool {
+fn is_line_start(data: &[u8], pos: usize) -> bool {
     pos == 0 || data[pos - 1] == b'\n'
 }
 
 // Find and extract a pattern value from a line
 fn find_and_extract_pattern(data: &[u8], search_end: usize, pattern: &[u8], search_backwards: bool) -> Option<(Vec<u8>, usize)> {
-    // Metadata patterns (pkgname:, summary:) are fixed _lowercase_ strings in package files
     let pos = if search_backwards {
         memchr::memmem::rfind(&data[..search_end], pattern)
     } else {
@@ -1039,20 +1058,19 @@ fn find_and_extract_pattern(data: &[u8], search_end: usize, pattern: &[u8], sear
     };
 
     if let Some(pos) = pos {
-        // Check if it's at the start of a line
-        if is_line_start(data, pos, pattern) {
+        if is_line_start(data, pos) {
             let value_start = pos + pattern.len();
             let value_end = find_next_newline(data, value_start);
             let mut value = Vec::new();
             value.extend_from_slice(&data[value_start..value_end]);
             return Some((value, pos));
         }
-        return Some((Vec::new(), pos)); // Found pattern but not at line start
+        return Some((Vec::new(), pos));
     }
     None
 }
 
-// Search for package name and summary in a chunk
+// Search for package name and summary in a chunk (original logic)
 fn search_package_metadata(
     chunk: &[u8],
     search_end: usize,
@@ -1062,14 +1080,12 @@ fn search_package_metadata(
     let mut found_pkgname = false;
     let mut found_summary = false;
 
-    // First look for pkgname (searching backwards)
     if let Some((pkg_value, pkg_pos)) = find_and_extract_pattern(chunk, search_end, PKGNAME_PATTERN, true) {
         if !pkg_value.is_empty() {
             current_pkgname.clear();
             current_pkgname.extend_from_slice(&pkg_value);
             found_pkgname = true;
 
-            // Now search forward from the pkgname line for the summary
             if let Some((sum_value, _)) = find_and_extract_pattern(chunk, pkg_pos, SUMMARY_PATTERN, false) {
                 if !sum_value.is_empty() {
                     current_summary.clear();
@@ -1083,66 +1099,281 @@ fn search_package_metadata(
     (found_pkgname, found_summary)
 }
 
-pub fn search_packages(packages_path: &Path, options: &SearchOptions) -> Result<()> {
-    // Memory map the file
-    let file = File::open(packages_path)?;
-    let mmap = unsafe { Mmap::map(&file)? };
+// Find paragraph boundaries: paragraph is separated by blank line ("\n\n")
+// Returns (paragraph_start, paragraph_end) where paragraph_end is the position before the next blank line
+fn find_paragraph_boundaries(data: &[u8], match_pos: usize) -> (usize, usize) {
+    // Find paragraph start: search backward for "\n\n" or start of file
+    let paragraph_start = if match_pos == 0 {
+        0
+    } else {
+        // Search backward for "\n\n" pattern
+        let mut pos = match_pos;
+        while pos > 0 {
+            if data[pos - 1] == b'\n' {
+                // Check if there's another newline before this one (i.e., "\n\n")
+                if pos > 1 && data[pos - 2] == b'\n' {
+                    // Found "\n\n", paragraph starts after this
+                    pos = pos - 1;
+                    break;
+                }
+                // Single newline, continue searching backward
+            }
+            pos -= 1;
+        }
+        pos
+    };
 
+    // Find paragraph end: search forward for "\n\n" or end of file
+    let paragraph_end = {
+        let mut pos = match_pos;
+        while pos < data.len() {
+            if data[pos] == b'\n' {
+                // Check if there's another newline after this one (i.e., "\n\n")
+                if pos + 1 < data.len() && data[pos + 1] == b'\n' {
+                    // Found "\n\n", paragraph ends at this newline
+                    break;
+                }
+            }
+            pos += 1;
+        }
+        pos
+    };
+
+    (paragraph_start, paragraph_end)
+}
+
+// Parse a paragraph (key: value lines) into a HashMap
+fn parse_paragraph_to_hashmap(paragraph: &[u8]) -> HashMap<String, String> {
+    let mut fields = HashMap::new();
+    let paragraph_str = String::from_utf8_lossy(paragraph);
+
+    let mut current_key = String::new();
+    let mut current_value = String::new();
+
+    for line in paragraph_str.lines() {
+        if let Some((key, value)) = line.split_once(": ") {
+            // Save previous key/value if exists
+            if !current_key.is_empty() {
+                fields.insert(current_key.clone(), current_value.clone());
+            }
+            current_key = key.trim().to_string();
+            current_value = value.trim().to_string();
+        } else if line.starts_with(' ') && !current_key.is_empty() {
+            // Continuation line (indented)
+            current_value.push('\n');
+            current_value.push_str(line.trim());
+        }
+    }
+
+    // Save the last key/value
+    if !current_key.is_empty() {
+        fields.insert(current_key, current_value);
+    }
+
+    fields
+}
+
+// Check if pattern matches in specified fields (or all fields if in_fields is empty)
+fn check_match_in_fields(fields: &HashMap<String, String>, options: &SearchOptions) -> bool {
+    if options.in_fields.is_empty() {
+        // Match in any field (original behavior)
+        for value in fields.values() {
+            let value_bytes = value.as_bytes();
+            if match_pattern(value_bytes, options) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Match only in specified fields
+    for field_name in &options.in_fields {
+        if let Some(value) = fields.get(field_name) {
+            let value_bytes = value.as_bytes();
+            if match_pattern(value_bytes, options) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+// Format package output according to format string or json
+fn format_package_output(fields: &HashMap<String, String>, format: &Option<String>) -> String {
+    match format {
+        Some(fmt) if fmt == "json" => {
+            serde_json::to_string(fields).unwrap_or_else(|e| {
+                log::warn!("Failed to serialize to JSON: {}", e);
+                "{}".to_string()
+            })
+        }
+        Some(fmt) => {
+            let mut result = fmt.clone();
+            // Replace ${...} patterns with field values
+            loop {
+                let start = result.find("${");
+                if start.is_none() {
+                    break;
+                }
+                let start = start.unwrap();
+                let end = result[start..].find('}');
+                if end.is_none() {
+                    break;
+                }
+                let end = start + end.unwrap();
+
+                let field_spec = &result[start + 2..end];
+                let (field_name, width) = if let Some(semi_pos) = field_spec.find(';') {
+                    let field = &field_spec[..semi_pos];
+                    let width_str = &field_spec[semi_pos + 1..];
+                    let width: i32 = width_str.parse().unwrap_or(0);
+                    (field, width)
+                } else {
+                    (field_spec, 0)
+                };
+
+                let value = fields.get(field_name).cloned().unwrap_or_default();
+                let formatted = if width > 0 {
+                    format!("{:>width$}", value, width = width as usize)
+                } else if width < 0 {
+                    format!("{:<width$}", value, width = (-width) as usize)
+                } else {
+                    value
+                };
+                result.replace_range(start..end + 1, &formatted);
+            }
+            // Process escape sequences: \t -> tab, \n -> newline
+            result = result.replace("\\t", "\t").replace("\\n", "\n");
+            result
+        }
+        None => {
+            let pkgname = fields.get("pkgname").cloned().unwrap_or_default();
+            let summary = fields.get("summary").cloned().unwrap_or_default();
+            format!("{} - {}", pkgname, summary)
+        }
+    }
+}
+
+// Search with HashMap for --in/--format/--limit options
+fn search_packages_hashmap(mmap: &Mmap, options: &SearchOptions) -> Result<()> {
     let mut stdout = BufWriter::new(std::io::stdout());
-
-    // Keep track of the last seen package name and summary
-    let mut current_pkgname = Vec::new();
-    let mut current_summary = Vec::new();
-
-    // Start position for our search
+    let mut printed_packages: HashSet<String> = HashSet::new();
     let mut pos = 0;
 
-    // Process the entire mmap
     while pos < mmap.len() {
-        // First search for our pattern
+        // Check global limit
+        if let Some(ref global_count) = options.result_count {
+            let count = global_count.lock().unwrap();
+            if *count >= options.limit.unwrap() {
+                return Ok(());
+            }
+        }
+
         if let Some(relative_pos) = find_first_match(&mmap[pos..], &options.u8_literal, options.ignore_case) {
             let pattern_pos = pos + relative_pos;
-
-            // Find the line containing this pattern
-            let (line_start, line_end) = find_line_boundaries(&mmap, pattern_pos, pattern_pos + 1);
+            let (line_start, line_end) = find_line_boundaries(mmap, pattern_pos, pattern_pos + 1);
             let line = &mmap[line_start..line_end];
 
-            let regex_matches = match_pattern(line, options);
-            if regex_matches {
-                // We found a match, now search backward for the most recent pkgname and summary
+            if match_pattern(line, options) {
+                // Find paragraph and parse to HashMap
+                let (paragraph_start, paragraph_end) = find_paragraph_boundaries(mmap, pattern_pos);
+                let paragraph = &mmap[paragraph_start..paragraph_end];
+                let fields = parse_paragraph_to_hashmap(paragraph);
+
+                // If --in is specified, verify match is in the correct field
+                if !options.in_fields.is_empty() && !check_match_in_fields(&fields, options) {
+                    pos = paragraph_end + 1;
+                    continue;
+                }
+
+                // Deduplicate by pkgname-version
+                let pkgname = fields.get("pkgname").cloned().unwrap_or_default();
+                let version = fields.get("version").cloned().unwrap_or_default();
+                let key = format!("{}-{}", pkgname, version);
+                if printed_packages.contains(&key) {
+                    pos = paragraph_end + 1;
+                    continue;
+                }
+                printed_packages.insert(key);
+
+                // Format and print
+                let output = format_package_output(&fields, &options.format);
+                writeln!(stdout, "{}", output)?;
+
+                // Update global counter
+                if let Some(ref global_count) = options.result_count {
+                    let mut count = global_count.lock().unwrap();
+                    *count += 1;
+                    if *count >= options.limit.unwrap() {
+                        return Ok(());
+                    }
+                }
+
+                pos = paragraph_end + 1;
+                continue;
+            }
+            pos = line_end + 1;
+        } else {
+            break;
+        }
+    }
+    Ok(())
+}
+
+// Search with original simple logic (pkgname + summary only)
+fn search_packages_default(mmap: &Mmap, options: &SearchOptions) -> Result<()> {
+    let mut stdout = BufWriter::new(std::io::stdout());
+    let mut printed_packages: HashSet<String> = HashSet::new();
+    let mut current_pkgname = Vec::new();
+    let mut current_summary = Vec::new();
+    let mut pos = 0;
+
+    while pos < mmap.len() {
+        if let Some(relative_pos) = find_first_match(&mmap[pos..], &options.u8_literal, options.ignore_case) {
+            let pattern_pos = pos + relative_pos;
+            let (line_start, line_end) = find_line_boundaries(mmap, pattern_pos, pattern_pos + 1);
+            let line = &mmap[line_start..line_end];
+
+            if match_pattern(line, options) {
                 let (found_pkgname, found_summary) = search_package_metadata(
-                    &mmap,
+                    mmap,
                     line_start,
                     &mut current_pkgname,
                     &mut current_summary
                 );
 
-                // Print the match if we found both pkgname and summary
                 if found_pkgname && found_summary {
-                    writeln!(
-                        stdout,
-                        "{} - {}",
-                        String::from_utf8_lossy(&current_pkgname),
-                        String::from_utf8_lossy(&current_summary)
-                    )?;
+                    let pkgname = String::from_utf8_lossy(&current_pkgname);
+                    if printed_packages.contains(&pkgname.to_string()) {
+                        pos = line_end + 1;
+                        continue;
+                    }
+                    printed_packages.insert(pkgname.to_string());
+                    writeln!(stdout, "{} - {}", pkgname, String::from_utf8_lossy(&current_summary))?;
                 }
+                pos = line_end + 1;
+                continue;
             }
-
-            // Move position past this match
             pos = line_end + 1;
         } else {
-            // No more matches in the file
             break;
         }
     }
-
     Ok(())
 }
 
-// Helper function to find the next newline character
-#[inline]
-fn find_next_newline(data: &[u8], start: usize) -> usize {
-    memchr::memchr(b'\n', &data[start..])
-        .map(|pos| start + pos)
-        .unwrap_or(data.len())
+pub fn search_packages(packages_path: &Path, options: &SearchOptions) -> Result<()> {
+    let file = File::open(packages_path)?;
+    let mmap = unsafe { Mmap::map(&file)? };
+
+    // Use HashMap-based search when --in/--format/--limit is specified
+    let need_hashmap = !options.in_fields.is_empty() ||
+                       options.format.is_some() ||
+                       options.limit.is_some();
+
+    if need_hashmap {
+        search_packages_hashmap(&mmap, options)
+    } else {
+        search_packages_default(&mmap, options)
+    }
 }

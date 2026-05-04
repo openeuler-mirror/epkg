@@ -1075,12 +1075,21 @@ r#"Examples:
   epkg search --paths "**/*.desktop"   # glob pattern, produces same results
   epkg search --paths '\.desktop$' -x  # regex pattern, produces same results
 
+  epkg search bash --in pkgname        # match only in pkgname field
+  epkg search bash --in pkgname,summary  # match in pkgname or summary
+  epkg search bash --format '${pkgname}\t${version}\t${summary}'
+  epkg search bash --format json       # JSON output
+  epkg search bash --limit 10          # limit to 10 results
+
 Note: Output order may vary between runs due to parallel optimization (results shown as found).
 "#)
                 .arg(arg!(-f --files "Search in file names"))
                 .arg(arg!(-p --paths "Search in full paths"))
                 .arg(arg!(-x --regexp "Pattern is regular expression, refer to https://docs.rs/regex/latest/regex/#syntax"))
                 .arg(arg!(-i --"ignore-case" "Case-insensitive search"))
+                .arg(arg!(--in <FIELDS> "Fields to match in, comma-separated (e.g. pkgname,summary). Default: match in all fields"))
+                .arg(arg!(--format <FORMAT> "Output format: '${field[;width]}' syntax or 'json'. Default: '${pkgname} - ${summary}'"))
+                .arg(arg!(--limit <N> "Limit number of results").value_parser(clap::value_parser!(usize)))
                 .arg(arg!(<PATTERN> "Pattern to search for"))
                 .arg_required_else_help(true)
         )
@@ -2386,12 +2395,20 @@ fn parse_options_convert(_config: &mut EPKGConfig, _sub_matches: &clap::ArgMatch
 
 
 fn parse_options_search(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
+    let in_fields: Vec<String> = sub_matches
+        .get_one::<String>("in")
+        .map(|s| s.split(',').map(|f| f.trim().to_string()).collect())
+        .unwrap_or_default();
+
     let options = search::SearchOptions {
         files: sub_matches.get_flag("files"),
         paths: sub_matches.get_flag("paths"),
         regexp: sub_matches.get_flag("regexp"),
         ignore_case: sub_matches.get_flag("ignore-case"),
         origin_pattern: sub_matches.get_one::<String>("PATTERN").unwrap().to_string(),
+        in_fields,
+        format: sub_matches.get_one::<String>("format").cloned(),
+        limit: sub_matches.get_one::<usize>("limit").copied(),
         ..Default::default()
     };
 
