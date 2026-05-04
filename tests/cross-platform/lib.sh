@@ -469,7 +469,7 @@ test_suite_history() {
         # Install a package to create generation 1
         run_install jq || return 1
         # Now restore to generation 0 (before jq was installed)
-        epkg restore -1
+        epkg restore -1 --assume-yes
     fi
 
     return 0
@@ -506,7 +506,7 @@ test_suite_gc() {
 
     # epkg gc - clean up unused cache and store files
     if ! echo "$skip_list" | grep -qw "gc"; then
-        epkg gc || return 1
+        epkg gc --assume-yes || return 1
     fi
 
     return 0
@@ -520,7 +520,7 @@ test_suite_upgrade() {
     # epkg upgrade - upgrade packages
     if ! echo "$skip_list" | grep -qw "upgrade"; then
         epkg list --upgradable | head -10
-        epkg upgrade
+        epkg upgrade --assume-yes
     fi
 
     return 0
