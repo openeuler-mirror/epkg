@@ -1731,11 +1731,13 @@ fn apply_env_config_from_path(env_root_or_etc: &Path, config: &mut EPKGConfig) -
     // With -r PATH we're on the host; run must do namespace isolation so -r and -e are equivalent.
     config.common.in_env_root = env_root_or_etc == Path::new("/");
     // Determine env_root based on execution context:
-    // - Inside VM: the root filesystem IS the environment, so use "/"
-    // - On host: use the actual env_root path from env.yaml
+    // - Loading from /etc/epkg/env.yaml inside VM: the root filesystem IS the environment, use "/"
+    // - Loading from user-specified path (via --root): use the specified path, not "/"
+    // This distinction is critical: --root $TEST_DIR/myenv should operate on that path,
+    // not on the VM's root filesystem (which is the harness environment).
     #[cfg(target_os = "linux")]
-    if crate::busybox::is_inside_vm() {
-        log::debug!("apply_env_config_from_path: inside VM, using '/' as env_root");
+    if env_root_or_etc == Path::new("/") && crate::busybox::is_inside_vm() {
+        log::debug!("apply_env_config_from_path: loading /etc/epkg/env.yaml inside VM, using '/' as env_root");
         config.common.env_root = "/".to_string();
     } else {
         config.common.env_root = env_config_data.env_root.clone();
