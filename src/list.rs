@@ -95,7 +95,8 @@ pub struct PackageListItem {
 pub fn list_packages_with_scope(scope: ListScope, pattern: &str) -> Result<()> {
     // Reset display state before processing any packages
     reset_display_state();
-    // Load installed packages first
+    // Ensure metadata and installed packages are loaded
+    crate::repo::sync_channel_metadata()?;
     load_installed_packages()?;
 
     let mut packages_found_overall = 0;
