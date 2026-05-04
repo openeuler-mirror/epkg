@@ -132,13 +132,16 @@ fn process_concatenated_gzip_streams_streaming(
 }
 
 /// Find the next gzip stream starting from the given position
+/// Valid gzip header must be: 0x1f 0x8b 0x08 (ID1, ID2, CM=deflate)
 fn find_next_gzip_stream(data: &[u8], start_pos: usize) -> Result<Option<usize>> {
     if start_pos >= data.len() {
         return Ok(None);
     }
 
-    for pos in start_pos..data.len().saturating_sub(1) {
-        if data[pos] == 0x1f && data[pos + 1] == 0x8b {
+    // Need at least 3 bytes to check full gzip magic: 1f 8b 08
+    for pos in start_pos..data.len().saturating_sub(2) {
+        // Check for valid gzip header: ID1=0x1f, ID2=0x8b, CM=0x08 (deflate)
+        if data[pos] == 0x1f && data[pos + 1] == 0x8b && data[pos + 2] == 0x08 {
             return Ok(Some(pos));
         }
     }
