@@ -756,7 +756,7 @@ fn add_global_args_and_help(cmd: Command) -> Command {
         .arg(arg!(--"download-only" "Download packages without installing").hide(true).global(true))
         .arg(arg!(-q --quiet "Suppress output").hide(true).global(true))
         .arg(arg!(-v --verbose "Verbose operation, show debug messages").hide(true).global(true))
-        .arg(arg!(-y --"assume-yes" "Automatically answer yes to all prompts").hide(true).global(true))
+        .arg(arg!(-y --"assume-yes" "Automatically answer yes to all prompts").alias("yes").hide(true).global(true))
         .arg(arg!(--"assume-no" "Automatically answer no to all prompts").hide(true).global(true))
         .arg(arg!(--"ignore-missing" "Ignore missing packages").hide(true).global(true))
         .arg(arg!(--"metadata-expire" <SECONDS> "Metadata expiration time in seconds (0=never, -1=always)").value_parser(clap::value_parser!(i32)).hide(true).global(true))
@@ -822,7 +822,7 @@ OPTIONS:
       --download-only               Download packages without installing
   -q, --quiet                       Suppress output
   -v, --verbose                     Verbose operation, show debug messages
-  -y, --assume-yes                  Automatically answer yes to all prompts
+  -y, --assume-yes, --yes          Automatically answer yes to all prompts
       --assume-no                   Automatically answer no to all prompts
       --ignore-missing              Ignore missing packages
       --metadata-expire <SECONDS>   Metadata expiration time in seconds (0=never, -1=always)
