@@ -89,7 +89,9 @@ done
 set_epkg_bin
 export EPKG_BIN
 
-export LOG_DIR="${LOG_DIR:-/tmp}"
+# Log directory: use project-local logs/ dir, ignore external LOG_DIR
+export LOG_DIR="$PROJECT_ROOT/tests/cross-platform/logs"
+mkdir -p "$LOG_DIR"
 export SKIP_CLEANUP="${KEEP_ENV}"
 
 log() {
