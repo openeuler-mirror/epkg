@@ -27,7 +27,7 @@ mkdir -p "$TEST_DIR"
 # Known differences between musl (epkg) and glibc (rpm) for sysconf/pathconf.
 # musl returns POSIX minimum values, glibc returns runtime kernel values.
 # These are NOT bugs - both behaviors are POSIX compliant.
-MUSL_GLIBC_DIFFS="arg_max ngroups_max link_max"
+MUSL_GLIBC_DIFFS="arg_max ngroups_max link_max open_max"
 
 
 # Helper function to compare epkg and rpm rpmlua results
