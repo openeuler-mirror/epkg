@@ -14,6 +14,7 @@ run_install bash
 "$EPKG_BIN" -e "$ENV_NAME" search --paths /bin/bash || exit 1
 
 result=$("$EPKG_BIN" -e "$ENV_NAME" search --paths /nonexistent/path/12345 2>&1)
-echo "$result" | grep -q "not found\|no matches\|No package" || echo "WARNING: Unexpected output for non-existent path: $result" >&2
+# Empty output or "not found"/"no matches"/"No package" are all valid "no results" responses
+echo "$result" | grep -q "not found\|no matches\|No package" || [ -z "$result" ] || echo "WARNING: Unexpected output for non-existent path: $result" >&2
 
 lang_ok
