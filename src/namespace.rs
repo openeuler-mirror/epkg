@@ -406,10 +406,11 @@ pub fn build_unified_context(
         &config.mount_spec_strings.iter().map(|s| s.as_str()).collect::<Vec<_>>()
     );
 
-    // Record the original host UID for VM mount configuration
-    // (this is before any namespace setup, so it's the real host UID)
+    // Record the original host UID/GID for VM mount configuration
+    // (this is before any namespace setup, so it's the real host UID/GID)
     let mut run_options = run_options.clone();
     run_options.host_uid = Some(uid.as_raw());
+    run_options.host_gid = Some(gid.as_raw());
     run_options.working_dir = config.working_dir.clone();
 
     // Check if this is a brew environment once and cache the result

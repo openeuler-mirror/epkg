@@ -923,12 +923,27 @@ fn create_and_configure_vm(
         // Get host UID/GID for auto-mapping policy (Unix only)
         #[cfg(unix)]
         let (translate_uid, translate_gid) = {
-            let host_uid = users::get_current_uid();
-            let host_gid = users::get_current_gid();
+            // Use the pre-namespace host UID/GID from run_options, not the current
+            // namespace UID which may be 0 (root inside user namespace)
+            let host_uid = run_options.host_uid.unwrap_or_else(|| {
+                // Fallback: if host_uid not set, use current UID (may be wrong inside namespace)
+                log::warn!("libkrun: host_uid not set, using current UID as fallback");
+                users::get_current_uid()
+            });
+            let host_gid = run_options.host_gid.unwrap_or_else(|| {
+                log::warn!("libkrun: host_gid not set, using current GID as fallback");
+                users::get_current_gid()
+            });
+            log::debug!("libkrun: host_uid={}, host_gid={}, user={:?}",
+                       host_uid, host_gid, run_options.user);
 
             // Apply auto-mapping policy for non-root users
-            let (auto_uid, auto_gid) = if crate::auto_idmap::should_auto_map(host_uid) {
-                crate::auto_idmap::auto_idmap_specs(host_uid, host_gid, run_options.user.as_deref())
+            let should_map = crate::auto_idmap::should_auto_map(host_uid);
+            log::debug!("libkrun: should_auto_map({}) = {}", host_uid, should_map);
+            let (auto_uid, auto_gid) = if should_map {
+                let specs = crate::auto_idmap::auto_idmap_specs(host_uid, host_gid, run_options.user.as_deref());
+                log::debug!("libkrun: auto_idmap_specs generated: uid={}, gid={}", specs.0.len(), specs.1.len());
+                specs
             } else {
                 (vec![], vec![])
             };
@@ -942,6 +957,7 @@ fn create_and_configure_vm(
                 auto_gid,
                 run_options.translate_gid.clone(),
             );
+            log::debug!("libkrun: final translate_uid={}, translate_gid={}", translate_uid.len(), translate_gid.len());
             (translate_uid, translate_gid)
         };
 

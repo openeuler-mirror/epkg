@@ -141,6 +141,9 @@ pub struct RunOptions {
     /// Original host UID before any namespace setup (for VM mount configuration).
     /// This is the real UID on the host, which may differ from the namespaced UID.
     pub host_uid: Option<u32>,
+    /// Original host GID before any namespace setup (for VM mount configuration).
+    /// This is the real GID on the host, which may differ from the namespaced GID.
+    pub host_gid: Option<u32>,
     /// Working directory to use after namespace setup (for Fs mode pivot).
     /// When pivot_root changes the root filesystem, the original working directory
     /// becomes invalid. This field stores the path to restore after pivot.
