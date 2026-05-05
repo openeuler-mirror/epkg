@@ -291,7 +291,7 @@ pub(crate) fn mount_spec(spec: &MountSpec, env_root: &Path, isolate_mode: Isolat
 
     // Determine filesystem type: empty string indicates bind/remount operations
     let result = if spec.fs_type.is_empty() {
-        mount_bind_remount_propagation(spec, source, target, flags, options, isolate_mode)
+        mount_bind_remount_propagation(spec, source, target, env_root, flags, options, isolate_mode)
     } else {
         mount_filesystem_type(spec, target, flags, options, isolate_mode)
     };
@@ -336,11 +336,10 @@ fn bind_mount_source_exists(spec: &MountSpec, source: &PathBuf) -> Option<bool> 
 
 /// Ensure target path exists for a bind mount, creating a placeholder if needed.
 /// Only creates placeholders in Tmpfs/Vmm modes, plus self-bind case in Env mode (see below).
-fn ensure_bind_target_exists(source: &PathBuf, target: &Path, isolate_mode: IsolateMode) -> Result<()> {
+fn ensure_bind_target_exists(source: &PathBuf, target: &Path, env_root: &Path, isolate_mode: IsolateMode) -> Result<()> {
     use std::fs;
 
     // If target already exists, nothing to do
-    // For Fs/Vm modes, target is in env_root; for Env mode, we return early
     if isolate_mode == IsolateMode::Fs || isolate_mode == IsolateMode::Vm {
         if lfs::exists_or_any_symlink(target) {
             return Ok(());
@@ -365,10 +364,18 @@ fn ensure_bind_target_exists(source: &PathBuf, target: &Path, isolate_mode: Isol
         return Ok(());
     }
 
-    // Only create placeholders in sandbox environments (Fs/Vm); don't create in host root for Env
+    // Only create placeholders in sandbox environments (Fs/Vm), or for Env mode when target is within env_root.
+    // For Env mode, creating files in arbitrary host paths is not allowed, but creating within
+    // env_root is safe (it's the environment's own directory tree).
     match isolate_mode {
         IsolateMode::Fs | IsolateMode::Vm => (),
-        IsolateMode::Env => return Ok(()), // Don't create files in host root
+        IsolateMode::Env => {
+            // Check if target is within env_root (safe to create)
+            // Note: target must start with env_root path (e.g., /home/wfg/.epkg/envs/dev-alpine/...)
+            if !target.starts_with(env_root) {
+                return Ok(()); // Don't create files in arbitrary host paths
+            }
+        }
     }
 
     // If source doesn't exist, cannot determine type (may be try_only mount)
@@ -456,6 +463,7 @@ fn mount_bind_remount_propagation(
     spec: &MountSpec,
     source: PathBuf,
     target: PathBuf,
+    env_root: &Path,
     flags: MsFlags,
     options: Option<&str>,
     isolate_mode: IsolateMode,
@@ -470,7 +478,7 @@ fn mount_bind_remount_propagation(
         // Remount operation (may also have MS_BIND for bind mount remount)
         mount_remount_ro(&target, flags, options)
     } else if flags.contains(MsFlags::MS_BIND) {
-        ensure_bind_target_exists(&source, &target, isolate_mode)?;
+        ensure_bind_target_exists(&source, &target, env_root, isolate_mode)?;
         if flags.contains(MsFlags::MS_RDONLY) {
             // Linux kernel ignores MS_RDONLY when passed with MS_BIND; the mount inherits
             // the read-write/read-only state from the source. To guarantee a read-only
