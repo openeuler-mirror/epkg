@@ -814,6 +814,11 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
         // Set mode to 700 (rwx------)
         crate::utils::set_permissions_from_mode(env_root, 0o700)
             .wrap_err_with(|| format!("Failed to set permissions for {}", env_root.display()))?;
+    } else {
+        // For public environments, ensure mode 755 (rwxr-xr-x) so other users can traverse
+        // This is especially important for VM isolation where the env root becomes the filesystem root
+        crate::utils::set_permissions_from_mode(env_root, 0o755)
+            .wrap_err_with(|| format!("Failed to set permissions for {}", env_root.display()))?;
     }
 
     #[cfg(windows)]
