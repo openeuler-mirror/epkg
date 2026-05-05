@@ -1132,12 +1132,17 @@ fn start_libkrun_vm(ctx: KrunContext, start_failed_tx: std::sync::mpsc::Sender<(
                 if status < 0 {
                     log::error!("libkrun: krun_start_enter failed with status {} (ctx_id={})", status, ctx.ctx_id);
                     crate::debug_epkg!("libkrun: krun_start_enter FAILED with status {}", status);
-                    // Signal failure to main thread so it doesn't wait for timeout
-                    let _ = start_failed_tx.send(());
                 } else {
-                    log::info!("libkrun: krun_start_enter returned status {} (VM exited normally)", status);
-                    crate::debug_epkg!("libkrun: VM exited normally with status {}", status);
+                    log::info!("libkrun: krun_start_enter returned status {} (VM exited)", status);
+                    crate::debug_epkg!("libkrun: VM exited with status {}", status);
                 }
+                // Signal to main thread so it doesn't wait for timeout.
+                // Send on ANY VM exit (not just errors) because:
+                // - If ready signal was already received, main thread moved on to command execution
+                //   and no longer polls start_failed_rx, so this signal is ignored.
+                // - If ready signal was NOT received (VM exited before becoming ready),
+                //   this wakes up wait_guest_ready_unix immediately instead of 30s timeout.
+                let _ = start_failed_tx.send(());
                 status
             }
         });
@@ -1864,6 +1869,10 @@ fn run_reverse_vsock_mode_inner(
     if run_options.no_exit {
         crate::debug_epkg!("[PERF] shutting down VM (no_exit mode)...");
         let shutdown_start = std::time::Instant::now();
+        // Clean up VM session file before shutdown to avoid stale session
+        let _ = crate::vm::unregister_vm_session(&env_name);
+        let _ = std::fs::remove_file(&vsock_sock_path);
+        log::debug!("libkrun: cleaned up VM session files before shutdown (reverse mode no_exit)");
         krun_vsock_shutdown_join_free(vm_thread, ctx_id);
         crate::debug_epkg!("[PERF] VM shutdown took {:.3}ms", shutdown_start.elapsed().as_secs_f64() * 1000.0);
         return apply_krun_exit_policy(exit_code, run_options);
@@ -1871,6 +1880,10 @@ fn run_reverse_vsock_mode_inner(
 
     crate::debug_epkg!("[PERF] TOTAL time {:.3}ms", total_start.elapsed().as_secs_f64() * 1000.0);
     crate::debug_epkg!("[PERF] shutting down VM and exiting...");
+    // Clean up VM session file before exit
+    let _ = crate::vm::unregister_vm_session(&env_name);
+    let _ = std::fs::remove_file(&vsock_sock_path);
+    log::debug!("libkrun: cleaned up VM session files before exit (reverse mode)");
     krun_vsock_shutdown_join_free_exit(vm_thread, ctx_id, exit_code);
 }
 
@@ -2130,20 +2143,38 @@ pub fn run_command_in_krun(
         // For no_exit mode (e.g., scriptlets), shutdown VM and return instead of exiting process
         #[cfg(not(target_os = "linux"))]
         if run_options.no_exit {
+            // Clean up VM session file before shutdown to avoid stale session
+            let _ = crate::vm::unregister_vm_session(env_name);
+            let _ = std::fs::remove_file(&vsock_sock_path);
+            log::debug!("libkrun: cleaned up VM session files before shutdown (no_exit mode)");
             krun_vsock_shutdown_join_free(vm_thread.take().unwrap(), ctx_id);
             return apply_krun_exit_policy(exit_code, run_options);
         }
 
         #[cfg(not(target_os = "linux"))]
-        krun_vsock_shutdown_join_free_exit(vm_thread.take().unwrap(), ctx_id, exit_code);
+        {
+            // Clean up VM session file before exit
+            let _ = crate::vm::unregister_vm_session(env_name);
+            let _ = std::fs::remove_file(&vsock_sock_path);
+            log::debug!("libkrun: cleaned up VM session files before exit");
+            krun_vsock_shutdown_join_free_exit(vm_thread.take().unwrap(), ctx_id, exit_code);
+        }
 
         // On Linux, shutdown VM unless vm_daemon mode (which parks forever)
         #[cfg(target_os = "linux")]
         if !run_options.vm_daemon {
             if run_options.no_exit {
+                // Clean up VM session file before shutdown
+                let _ = crate::vm::unregister_vm_session(env_name);
+                let _ = std::fs::remove_file(&vsock_sock_path);
+                log::debug!("libkrun: cleaned up VM session files before shutdown (no_exit mode on Linux)");
                 krun_vsock_shutdown_join_free(vm_thread.take().unwrap(), ctx_id);
                 return apply_krun_exit_policy(exit_code, run_options);
             }
+            // Clean up VM session file before exit
+            let _ = crate::vm::unregister_vm_session(env_name);
+            let _ = std::fs::remove_file(&vsock_sock_path);
+            log::debug!("libkrun: cleaned up VM session files before exit on Linux");
             krun_vsock_shutdown_join_free_exit(vm_thread.take().unwrap(), ctx_id, exit_code);
         }
     }
