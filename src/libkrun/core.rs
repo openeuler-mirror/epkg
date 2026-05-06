@@ -2002,7 +2002,7 @@ pub fn run_command_in_krun(
                     if start_failed_rx.try_recv().is_ok() {
                         log::error!("libkrun: VM failed to start");
                         let _ = unsafe { krun_signal_shutdown(ctx_id) };
-                        let _ = vm_thread.join();
+                        let _ = vm_thread.take().unwrap().join();
                         let _ = unsafe { krun_free_ctx(ctx_id) };
                         return Err(eyre::eyre!("VM failed to start (krun_start_enter error)"));
                     }
