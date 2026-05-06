@@ -403,65 +403,16 @@ struct LibkrunConfig {
     virtiofs_mounts:     Vec<(String, String, String, bool)>,
 }
 
+/// Build kernel command line arguments for libkrun VM.
+/// Returns (kernel_args, virtiofs_mounts).
 #[cfg(feature = "libkrun")]
-fn build_libkrun_config(
-    env_root: &Path,
-    run_options: &RunOptions,
-    guest_cmd_path: &Path,
-) -> Result<LibkrunConfig> {
-    #[cfg(all(target_os = "windows", feature = "embedded_init"))]
-    log::info!(
-        "libkrun: embedded_init enabled: guest uses virtual /init.krun (libkrun devices; no epkg file extract)"
-    );
-    #[cfg(all(target_os = "windows", not(feature = "embedded_init")))]
-    log::info!(
-        "libkrun: guest init is /usr/bin/init (epkg Linux ELF in env). For early bootstrap only, rebuild with --features embedded_init (virtual init.krun)."
-    );
-
-    let use_cmdline_mode = std::env::var("EPKG_VM_NO_DAEMON").is_ok();
-    let use_vsock = !use_cmdline_mode;
-    log::debug!("libkrun: mode: cmdline={}, vsock={}", use_cmdline_mode, use_vsock);
-    log::debug!("libkrun: EPKG_VM_NO_DAEMON={}", std::env::var("EPKG_VM_NO_DAEMON").unwrap_or_else(|_| "not set".to_string()));
-
-    // Use reverse vsock mode for first run to avoid potential vsock handshake timing issues.
-    // In reverse mode, Guest connects to Host after full initialization.
-    // For reuse mode on non-Linux, check if there's an existing session:
-    // - If existing session: use forward mode (Host connects to Guest)
-    // - If no existing session: use reverse mode for first command, then switch to forward
-    #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
-    let has_existing_session = if run_options.vm_keep_timeout.is_some() {
-        VM_REUSE_SESSION.lock().unwrap().is_some()
-    } else {
-        false
-    };
-    #[cfg(any(not(feature = "libkrun"), target_os = "linux"))]
-    let has_existing_session = false;
-    // Note: epkg.vsock_reverse=1 is now default in libkrun's DEFAULT_KERNEL_CMDLINE for Windows.
-    // For cross-process VM reuse, we use forward mode (Guest listens, Host connects).
-    // The ready port 10001 solves timing issues - Guest notifies Host when ready.
-    // This allows any host process to connect to the VM for reuse.
-    let use_reverse_vsock = false;  // Always use forward mode for cross-process reuse
-    crate::debug_epkg!("libkrun: use_vsock={} has_existing_session={} use_reverse_vsock={}",
-               use_vsock, has_existing_session, use_reverse_vsock);
-    log::info!("libkrun: use_vsock={} has_existing_session={} use_reverse_vsock={}",
-               use_vsock, has_existing_session, use_reverse_vsock);
-
-    let guest_exec_path = guest_cmd_path
-        .strip_prefix(env_root)
-        .map(|rel| {
-            let rel_str = rel.to_string_lossy().to_string();
-            if rel_str.starts_with('/') {
-                rel_str
-            } else {
-                format!("/{}", rel_str)
-            }
-        })
-        .unwrap_or_else(|_| guest_cmd_path.to_string_lossy().to_string());
-
-    // Build guest command (for vm_daemon mode, guest_cmd_path is already /bin/true from vm_start())
-    let (cmd_parts, init_cmd) = build_guest_command(Path::new(&guest_exec_path), &run_options.args)
-        .map_err(|e| eyre::eyre!("Failed to build guest command: {}", e))?;
-
+#[allow(unused_variables)]  // env_root unused on Linux (virtiofs_mounts is empty)
+fn build_kernel_args(
+    env_root:            &Path,
+    run_options:         &RunOptions,
+    use_cmdline_mode:    bool,
+    init_cmd:            &str,
+) -> (String, Vec<(String, String, String, bool)>) {
     // root=/dev/root: specifies the virtiofs tag for root filesystem
     // (krun_set_root sets up a virtiofs device with tag "/dev/root")
     // On Windows, use ttyS0 for serial console since libkrun auto-adds COM1 device.
@@ -489,7 +440,7 @@ fn build_libkrun_config(
     let vm_perf = "nowatchdog nmi_watchdog=0";
 
     let init_path = if cfg!(feature = "embedded_init") { "/init.krun" } else { GUEST_INIT_PATH };
-    let reverse = if use_reverse_vsock { " epkg.vsock_reverse=1" } else { "" };
+    let reverse = "";  // Always use forward mode for cross-process reuse
 
     // Build base cmdline - epkg controls all parameters for maximum flexibility
     // libkrun's DEFAULT_KERNEL_CMDLINE is minimal and may be replaced entirely
@@ -627,6 +578,71 @@ fn build_libkrun_config(
         kernel_args.push_str(&format!(" epkg.vol_{}={}", i, percent_encode(&spec)));
     }
     crate::debug_epkg!("libkrun: FINAL kernel_args passed to VM: {}", kernel_args);
+
+    (kernel_args, virtiofs_mounts)
+}
+
+#[cfg(feature = "libkrun")]
+fn build_libkrun_config(
+    env_root: &Path,
+    run_options: &RunOptions,
+    guest_cmd_path: &Path,
+) -> Result<LibkrunConfig> {
+    #[cfg(all(target_os = "windows", feature = "embedded_init"))]
+    log::info!(
+        "libkrun: embedded_init enabled: guest uses virtual /init.krun (libkrun devices; no epkg file extract)"
+    );
+    #[cfg(all(target_os = "windows", not(feature = "embedded_init")))]
+    log::info!(
+        "libkrun: guest init is /usr/bin/init (epkg Linux ELF in env). For early bootstrap only, rebuild with --features embedded_init (virtual init.krun)."
+    );
+
+    let use_cmdline_mode = std::env::var("EPKG_VM_NO_DAEMON").is_ok();
+    let use_vsock = !use_cmdline_mode;
+    log::debug!("libkrun: mode: cmdline={}, vsock={}", use_cmdline_mode, use_vsock);
+    log::debug!("libkrun: EPKG_VM_NO_DAEMON={}", std::env::var("EPKG_VM_NO_DAEMON").unwrap_or_else(|_| "not set".to_string()));
+
+    // Use reverse vsock mode for first run to avoid potential vsock handshake timing issues.
+    // In reverse mode, Guest connects to Host after full initialization.
+    // For reuse mode on non-Linux, check if there's an existing session:
+    // - If existing session: use forward mode (Host connects to Guest)
+    // - If no existing session: use reverse mode for first command, then switch to forward
+    #[cfg(all(feature = "libkrun", not(target_os = "linux")))]
+    let has_existing_session = if run_options.vm_keep_timeout.is_some() {
+        VM_REUSE_SESSION.lock().unwrap().is_some()
+    } else {
+        false
+    };
+    #[cfg(any(not(feature = "libkrun"), target_os = "linux"))]
+    let has_existing_session = false;
+    // Note: epkg.vsock_reverse=1 is now default in libkrun's DEFAULT_KERNEL_CMDLINE for Windows.
+    // For cross-process VM reuse, we use forward mode (Guest listens, Host connects).
+    // The ready port 10001 solves timing issues - Guest notifies Host when ready.
+    // This allows any host process to connect to the VM for reuse.
+    let use_reverse_vsock = false;  // Always use forward mode for cross-process reuse
+    crate::debug_epkg!("libkrun: use_vsock={} has_existing_session={} use_reverse_vsock={}",
+               use_vsock, has_existing_session, use_reverse_vsock);
+    log::info!("libkrun: use_vsock={} has_existing_session={} use_reverse_vsock={}",
+               use_vsock, has_existing_session, use_reverse_vsock);
+
+    let guest_exec_path = guest_cmd_path
+        .strip_prefix(env_root)
+        .map(|rel| {
+            let rel_str = rel.to_string_lossy().to_string();
+            if rel_str.starts_with('/') {
+                rel_str
+            } else {
+                format!("/{}", rel_str)
+            }
+        })
+        .unwrap_or_else(|_| guest_cmd_path.to_string_lossy().to_string());
+
+    // Build guest command (for vm_daemon mode, guest_cmd_path is already /bin/true from vm_start())
+    let (cmd_parts, init_cmd) = build_guest_command(Path::new(&guest_exec_path), &run_options.args)
+        .map_err(|e| eyre::eyre!("Failed to build guest command: {}", e))?;
+
+    // Build kernel arguments and virtiofs mounts
+    let (kernel_args, virtiofs_mounts) = build_kernel_args(env_root, run_options, use_cmdline_mode, &init_cmd);
 
     let kernel_path = if run_options.kernel.is_some() {
         run_options.kernel.clone()
