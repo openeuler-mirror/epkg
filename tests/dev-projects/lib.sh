@@ -15,6 +15,9 @@ create_env() {
     log "Creating environment $name (os=$os)"
     "$EPKG_BIN" --assume-yes env create "$name" -c "$os" || error "Failed to create env $name"
     bootstrap_shell "$name"
+    # Update package metadata after creating env to avoid stale package references
+    log "Updating package metadata for $name"
+    "$EPKG_BIN" -e "$name" update
 }
 
 # Ensure /bin/sh exists in env so lang scripts can run /bin/sh -c '...'

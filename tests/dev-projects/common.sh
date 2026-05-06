@@ -103,6 +103,10 @@ run_install() {
     _run_logged "install" "epkg -e $ENV_NAME --assume-yes install --ignore-missing $*" --assume-yes install --ignore-missing "$@"
 }
 
+run_update() {
+    _run_logged "update" "epkg -e $ENV_NAME update" update
+}
+
 # Quiet: no log file, no grep, no stop. Use with || lang_skip or || run_install ... for graceful fallback.
 check_cmd() {
     "$EPKG_BIN" -e "$ENV_NAME" run -- "$@" 2>/dev/null
