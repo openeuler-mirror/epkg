@@ -927,11 +927,11 @@ fn create_and_configure_vm(
             // namespace UID which may be 0 (root inside user namespace)
             let host_uid = run_options.host_uid.unwrap_or_else(|| {
                 // Fallback: if host_uid not set, use current UID (may be wrong inside namespace)
-                log::warn!("libkrun: host_uid not set, using current UID as fallback");
+                log::info!("libkrun: host_uid not set, using current UID as fallback");
                 users::get_current_uid()
             });
             let host_gid = run_options.host_gid.unwrap_or_else(|| {
-                log::warn!("libkrun: host_gid not set, using current GID as fallback");
+                log::info!("libkrun: host_gid not set, using current GID as fallback");
                 users::get_current_gid()
             });
             log::debug!("libkrun: host_uid={}, host_gid={}, user={:?}",
