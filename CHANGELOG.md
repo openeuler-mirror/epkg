@@ -2,6 +2,46 @@
 
 ---
 
+## [v0.2.6] – 2026-05-08
+
+### Added
+
+#### CLI and package queries
+- **search** – `--in`, `--format`, and `--limit` options for narrower queries and output control.
+- **rpm** – `--whatprovides` using a provide-to-package-names index.
+- **main** – `--yes` as an alias for `--assume-yes`.
+
+#### VM and terminals
+- **libkrun** – `TerminalGuard` and `SignalGuard` for restoring terminal state across VM reuse; atexit and ordered flush/drain behavior to avoid corrupted TTY output.
+- **libkrun** – Guest PTY receives host terminal size at command start; macOS TTY flush to reduce output delay.
+- **guest_daemon** – Parallel command execution in the guest.
+
+#### Mount infrastructure
+- **mount_specs** – Cross-platform mount specification helpers and unified virtiofs mount policy for all VMM backends.
+
+### Changed
+- **vm** – Lifecycle unified around `vm_keep_timeout`; removed `reuse_vm` / `vm_reuse_connect` split; session file stores full start parameters and effective timeout.
+- **libkrun** – Refactored `build_kernel_args()` out of `build_libkrun_config()`; pre-namespace host UID/GID for `auto_idmap`; host UID/GID fallback logs demoted from warn to info.
+- **list** – Uses repository metadata so installed rows show complete fields; Size column width increased to 9.
+- **busybox** – `df` moved under Linux-only applets; header and mount-point behavior aligned with busybox expectations.
+- **docs** – VM mount documentation updated; removed superseded `vm-virtiofs-mount.md`.
+
+### Fixed
+- **VM reliability** – Session reuse and start stalls (including Linux VM thread lifetime); early VM exit surfaces as failure instead of hanging; Windows `Option<JoinHandle>` build fix; QEMU parallel clients vsock CID conflicts; `vm_daemon` infinite timeout forwarding; CRLF stripped for non-terminal streams.
+- **mount** – Bind-mount target creation for env paths under `env_root`; VM cwd mount uses `@` prefix where required; `Env` mode `--root` / guest `env_root` detection fixes.
+- **vmm** – Panics when `run_command_in_krun` returned `Ok(())` and missing `Ok(())` return paths.
+- **rpm / apk_repo** – Prefer repository metadata for installed packages where appropriate; gzip stream detection uses full magic bytes; mark `alpine-release` and `alpine-baselayout` as essential.
+- **environment** – Mode `755` for public environments so directories are traversable.
+- **busybox** – `df` skips inaccessible mount points, validates paths, and improves column layout; `ls` handles fifo/socket/device nodes correctly.
+- **go / crystal / codex** – VM-mode skips and command paths where virtiofs or static linking require it.
+- **install.sh** – Avoid jq parse errors by using `printf` instead of `echo`.
+- **tests** – Cross-platform and in-VM harness fixes (timeouts, caches, `TEST_TMP`, assume-yes, musl/opencode edge cases); additional VM SU and lifecycle coverage.
+
+### Statistics
+- **79 commits, 60 files changed, 2873 insertions(+), 1478 deletions(-)**
+
+---
+
 ## [v0.2.5] – 2026-04-21
 
 ### Added
