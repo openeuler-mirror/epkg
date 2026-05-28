@@ -1,6 +1,10 @@
-label: epkg User Guide
+label: epkg Usage Guide
 isManual: true
-description: epkg for package management
+description: This guide describes how to use epkg.
 sections:
-  - label: epkg User Guide
+  - label: Using the epkg Package Manager
     href: ./epkg_package_manager_usage_guide.md
+  - label: Using the x2epkg Tool
+    href: ./x2epkg_usage_guide.md
+  - label: Using the create_repo Tool
+    href: ./create_repo_usage_guide.md
